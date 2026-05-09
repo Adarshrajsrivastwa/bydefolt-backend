@@ -9,6 +9,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
 import { sendOtpEmail, sendWelcomeAfterSignupEmail } from '../services/mail.js';
+import { ensureBdId, generateUniqueBdId } from '../services/bdId.js';
+import { CONNECTION_FIELDS, effectiveConnectionField, inferConnectionField } from '../util/connectionField.js';
 
 const router = Router();
 
@@ -32,56 +34,18 @@ function sendValidationError(res, errors) {
   return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
 }
 
-function buildBdIdBase(name, phone) {
-  const firstName = name.trim().split(/\s+/)[0] || '';
-  const cleanFirst = firstName.replace(/[^a-zA-Z]/g, '').slice(0, 8).toUpperCase();
-  const firstLetter = cleanFirst[0] || 'U';
-  const midPhone = phone.slice(5, 8);
-  const year = String(new Date().getFullYear());
-  return `${cleanFirst}${firstLetter}${midPhone}${year}`;
-}
-
-async function generateUniqueBdId(name, phone) {
-  const base = buildBdIdBase(name, phone);
-  let candidate = base;
-  let counter = 1;
-  while (await User.exists({ bdId: candidate })) {
-    candidate = `${base}${String(counter).padStart(2, '0')}`;
-    counter += 1;
-  }
-  return candidate;
-}
-
-function buildLegacyBdIdBase(user) {
-  const fromName = (user.name || '')
-    .replace(/[^a-zA-Z]/g, '')
-    .slice(0, 8)
-    .toUpperCase();
-  const localEmail = String(user.email || '')
-    .split('@')[0]
-    .replace(/[^a-zA-Z0-9]/g, '')
-    .slice(0, 4)
-    .toUpperCase();
-  const year = String(new Date().getFullYear());
-  return `${fromName || 'USER'}${localEmail || 'ID'}${year}`;
-}
-
-async function ensureBdId(user) {
-  if (user.bdId && String(user.bdId).trim().length > 0) {
-    return user.bdId;
-  }
-  const base = buildLegacyBdIdBase(user);
-  let candidate = base;
-  let counter = 1;
-  while (await User.exists({ bdId: candidate })) {
-    candidate = `${base}${String(counter).padStart(2, '0')}`;
-    counter += 1;
-  }
-  await User.updateOne(
-    { _id: user._id, $or: [{ bdId: { $exists: false } }, { bdId: null }, { bdId: '' }] },
-    { $set: { bdId: candidate } }
-  );
-  return candidate;
+function publicUserPayload(user, bdId) {
+  return {
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    bdId,
+    role: user.role,
+    companyStatus: user.companyStatus,
+    headline: user.headline || '',
+    connectionField: effectiveConnectionField(user),
+  };
 }
 
 function signToken(user) {
@@ -175,6 +139,7 @@ router.post(
       role,
       companyId,
       emailVerified: false,
+      ...(role === 'jobSeeker' ? { connectionField: inferConnectionField(bdId) } : {}),
     });
     if (role === 'company') {
       const companyFields = [
@@ -204,15 +169,7 @@ router.post(
     return res.status(201).json({
       needsOtp: true,
       otpPurpose: 'signup',
-      user: {
-        id: userObj._id.toString(),
-        name: userObj.name,
-        email: userObj.email,
-        phone: userObj.phone,
-        bdId: userObj.bdId,
-        role: userObj.role,
-        companyStatus: userObj.companyStatus,
-      },
+      user: publicUserPayload(user, userObj.bdId),
       accessToken: '',
       needsApproval: false,
     });
@@ -294,15 +251,7 @@ router.post(
     return res.status(201).json({
       needsOtp: true,
       otpPurpose: 'signup',
-      user: {
-        id: userObj._id.toString(),
-        name: userObj.name,
-        email: userObj.email,
-        phone: userObj.phone,
-        bdId: userObj.bdId,
-        role: userObj.role,
-        companyStatus: userObj.companyStatus,
-      },
+      user: publicUserPayload(user, userObj.bdId),
       accessToken: '',
       needsApproval: false,
     });
@@ -342,15 +291,7 @@ router.post(
     return res.json({
       needsOtp: true,
       otpPurpose: 'login',
-      user: {
-        id: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        bdId,
-        role: user.role,
-        companyStatus: user.companyStatus,
-      },
+      user: publicUserPayload(user, bdId),
       accessToken: '',
     });
   }
@@ -396,6 +337,7 @@ router.post(
     await user.save();
 
     const bdId = await ensureBdId(user);
+    const fresh = (await User.findById(user._id)) || user;
 
     if (purpose === 'signup') {
       const companyPendingReview = user.role === 'company' && user.companyStatus !== 'approved';
@@ -413,15 +355,7 @@ router.post(
         otpPurpose: null,
         needsApproval: true,
         accessToken: '',
-        user: {
-          id: user._id.toString(),
-          name: user.name,
-          email: user.email,
-          phone: user.phone,
-          bdId,
-          role: user.role,
-          companyStatus: user.companyStatus,
-        },
+        user: publicUserPayload(fresh, bdId),
       });
     }
 
@@ -431,15 +365,7 @@ router.post(
       otpPurpose: null,
       needsApproval: false,
       accessToken,
-      user: {
-        id: user._id.toString(),
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        bdId,
-        role: user.role,
-        companyStatus: user.companyStatus,
-      },
+      user: publicUserPayload(fresh, bdId),
     });
   }
 );
@@ -493,17 +419,48 @@ router.get('/me', requireAuth, async (req, res) => {
     return res.status(404).json({ message: 'User not found' });
   }
   const bdId = await ensureBdId(user);
+  const fresh = await User.findById(req.user.id);
   return res.json({
-    user: {
-      id: user._id.toString(),
-      name: user.name,
-      email: user.email,
-      phone: user.phone,
-      bdId,
-      role: user.role,
-      companyStatus: user.companyStatus,
-    },
+    user: publicUserPayload(fresh, bdId),
   });
 });
+
+router.patch(
+  '/me/profile',
+  requireAuth,
+  [
+    body('headline').optional().isString().trim().isLength({ max: 200 }),
+    body('connectionField')
+      .optional()
+      .custom((v) => v == null || v === '' || CONNECTION_FIELDS.includes(String(v)))
+      .withMessage(`connectionField must be one of: ${CONNECTION_FIELDS.join(', ')}`),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const updates = {};
+    if (req.body.headline !== undefined) {
+      updates.headline = String(req.body.headline).slice(0, 200);
+    }
+    if (req.body.connectionField !== undefined) {
+      const v = req.body.connectionField;
+      updates.connectionField = v === '' || v == null ? '' : String(v).trim();
+    }
+
+    if (Object.keys(updates).length) {
+      await User.updateOne({ _id: user._id }, { $set: updates });
+    }
+
+    const fresh = await User.findById(user._id);
+    const bdId = await ensureBdId(fresh);
+    return res.json({
+      user: publicUserPayload(fresh, bdId),
+    });
+  }
+);
 
 export { router as authRouter };

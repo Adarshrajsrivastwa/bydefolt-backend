@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
+import { CONNECTION_FIELDS } from '../util/connectionField.js';
 
 const roles = ['jobSeeker', 'recruiter', 'company', 'owner'];
 const companyStatuses = ['pending', 'approved', 'rejected'];
@@ -48,6 +49,15 @@ const userSchema = new mongoose.Schema(
     emailOtpHash: { type: String, select: false, default: null },
     emailOtpExpiresAt: { type: Date, default: null },
     emailOtpPurpose: { type: String, default: null },
+    /** Short professional headline (job seeker network card). */
+    headline: { type: String, default: '', trim: true, maxlength: 200 },
+    /** Networking / suggestion bucket; must be one of [CONNECTION_FIELDS] when set. */
+    connectionField: {
+      type: String,
+      default: '',
+      trim: true,
+      enum: [...CONNECTION_FIELDS, ''],
+    },
   },
   { timestamps: true }
 );

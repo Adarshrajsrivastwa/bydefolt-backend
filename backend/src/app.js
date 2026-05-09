@@ -12,6 +12,8 @@ import { authRouter } from './routes/auth.js';
 import { companyProfileRouter } from './routes/companyProfile.js';
 import { jobsRouter } from './routes/jobs.js';
 import { adminRouter } from './routes/admin.js';
+import { connectionsRouter } from './routes/connections.js';
+import { feedRouter } from './routes/feed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -92,6 +94,8 @@ export function buildApp() {
   app.use('/api/auth', authLimit, authRouter);
   app.use('/api/company-profile', companyProfileRouter);
   app.use('/api/jobs', jobsRouter);
+  app.use('/api/connections', connectionsRouter);
+  app.use('/api/feed', feedRouter);
   app.use('/api/admin', adminRouter);
   app.use((_req, res) => {
     return res.status(404).json({ message: 'Not found' });

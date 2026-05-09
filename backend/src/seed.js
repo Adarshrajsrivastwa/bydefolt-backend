@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import mongoose from 'mongoose';
 import { User } from './models/User.js';
+import { NetworkFeedPost } from './models/NetworkFeedPost.js';
 
 const demoes = [
   {
@@ -20,6 +21,19 @@ const demoes = [
     phone: '9000022222',
     bdId: 'KARTIKK2222026',
     emailVerified: true,
+    headline: 'Building products · mobile & web',
+    connectionField: 'Software',
+  },
+  {
+    name: 'Aisha Khan',
+    email: 'peer@gmail.com',
+    password: '123456',
+    role: 'jobSeeker',
+    phone: '9000066666',
+    bdId: 'AISHA6662026',
+    emailVerified: true,
+    headline: 'Full-stack · Node & React',
+    connectionField: 'Software',
   },
   {
     name: 'Recruiter partner',
@@ -79,6 +93,36 @@ async function main() {
     );
     // eslint-disable-next-line no-console
     console.log('linked recruiters to company:', company.email);
+  }
+
+  const kartik = await User.findOne({ email: 'user@gmail.com' });
+  const aisha = await User.findOne({ email: 'peer@gmail.com' });
+  if (kartik && aisha) {
+    const n = await NetworkFeedPost.countDocuments();
+    if (n === 0) {
+      await NetworkFeedPost.insertMany([
+        {
+          author: kartik._id,
+          connectionField: 'Software',
+          body:
+            'Tip for fellow devs: ship small, get feedback early. Our last sprint got way better once we started weekly demos.',
+        },
+        {
+          author: aisha._id,
+          connectionField: 'Software',
+          body:
+            'Anyone else learning Rust on the side? Curious how you’re mixing it with your day job stack (Node/React here).',
+        },
+        {
+          author: kartik._id,
+          connectionField: 'Software',
+          body:
+            'Coffee chat open this week — especially if you’re into mobile or API design. DM your BD ID!',
+        },
+      ]);
+      // eslint-disable-next-line no-console
+      console.log('seeded demo network feed posts (Software)');
+    }
   }
 
   await mongoose.disconnect();
