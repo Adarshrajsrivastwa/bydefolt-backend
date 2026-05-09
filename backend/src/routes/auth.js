@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
-import path from 'node:path';
+import { COMPANY_UPLOAD_DIR } from '../config/uploads.js';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
@@ -11,7 +11,7 @@ const router = Router();
 
 const upload = multer({
   storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, path.join(process.cwd(), 'uploads', 'company')),
+    destination: (_req, _file, cb) => cb(null, COMPANY_UPLOAD_DIR),
     filename: (_req, file, cb) => {
       const safe = String(file.originalname || 'document.pdf').replace(/[^a-zA-Z0-9.\-_]/g, '_');
       const uniq = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
