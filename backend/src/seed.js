@@ -10,6 +10,7 @@ const demoes = [
     role: 'owner',
     phone: '9000011111',
     bdId: 'PLATFORMO1112026',
+    emailVerified: true,
   },
   {
     name: 'Kartik Khorwal',
@@ -18,6 +19,7 @@ const demoes = [
     role: 'jobSeeker',
     phone: '9000022222',
     bdId: 'KARTIKK2222026',
+    emailVerified: true,
   },
   {
     name: 'Recruiter partner',
@@ -26,6 +28,7 @@ const demoes = [
     role: 'recruiter',
     phone: '9000033333',
     bdId: 'RECRUITE3332026',
+    emailVerified: true,
   },
   {
     name: 'Primary HR desk',
@@ -34,6 +37,7 @@ const demoes = [
     role: 'recruiter',
     phone: '9000044444',
     bdId: 'PRIMARYHR4442026',
+    emailVerified: true,
   },
   {
     name: 'Company admin',
@@ -42,6 +46,8 @@ const demoes = [
     role: 'company',
     phone: '9000055555',
     bdId: 'COMPANYA5552026',
+    companyStatus: 'approved',
+    emailVerified: true,
   },
 ];
 

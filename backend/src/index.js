@@ -1,9 +1,6 @@
 import 'dotenv/config';
 import { buildApp } from './app.js';
 import { connectDb } from './config/db.js';
-import { ensureUploadDirs } from './config/uploads.js';
-
-ensureUploadDirs();
 
 const port = Number.parseInt(process.env.PORT || '5000', 10);
 const uri = process.env.MONGODB_URI;

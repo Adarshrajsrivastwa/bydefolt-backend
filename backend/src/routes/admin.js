@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
+import { sendCompanyApprovedEmail, sendCompanyRejectedEmail } from '../services/mail.js';
 
 const router = Router();
 
@@ -64,6 +65,12 @@ router.post(
     if (!company) return res.status(404).json({ message: 'Company not found' });
     company.companyStatus = 'approved';
     await company.save();
+    try {
+      await sendCompanyApprovedEmail(company.email, company.name);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[mail] company approved notification failed:', err?.message || err);
+    }
     const profile = await CompanyProfile.findOne({ userId: company._id });
     return res.json({ company: mapCompanyRow(company, profile) });
   }
@@ -79,6 +86,12 @@ router.post(
     if (!company) return res.status(404).json({ message: 'Company not found' });
     company.companyStatus = 'rejected';
     await company.save();
+    try {
+      await sendCompanyRejectedEmail(company.email, company.name, req.body.reason || '');
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error('[mail] company rejected notification failed:', err?.message || err);
+    }
     const profile = await CompanyProfile.findOne({ userId: company._id });
     return res.json({ company: mapCompanyRow(company, profile) });
   }

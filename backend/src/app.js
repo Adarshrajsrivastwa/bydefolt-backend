@@ -12,7 +12,6 @@ import { authRouter } from './routes/auth.js';
 import { companyProfileRouter } from './routes/companyProfile.js';
 import { jobsRouter } from './routes/jobs.js';
 import { adminRouter } from './routes/admin.js';
-import { UPLOADS_ROOT } from './config/uploads.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,8 +82,9 @@ export function buildApp() {
       maxAge: isProd ? '1d' : 0,
     })
   );
-  // Company verification uploads (PDFs, etc) — same root as multer (see config/uploads.js)
-  app.use('/uploads', express.static(UPLOADS_ROOT, { maxAge: isProd ? '1d' : 0 }));
+  // Company verification uploads (PDFs, etc)
+  const uploadsDir = path.join(__dirname, '../uploads');
+  app.use('/uploads', express.static(uploadsDir, { maxAge: isProd ? '1d' : 0 }));
   app.get('/health', (_req, res) => {
     res.set('Cache-Control', 'no-store');
     return res.json({ status: 'ok', uptime: process.uptime() });

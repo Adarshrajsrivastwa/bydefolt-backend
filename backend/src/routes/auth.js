@@ -2,16 +2,19 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
-import { COMPANY_UPLOAD_DIR } from '../config/uploads.js';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
+import { sendOtpEmail, sendWelcomeAfterSignupEmail } from '../services/mail.js';
 
 const router = Router();
 
 const upload = multer({
   storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, COMPANY_UPLOAD_DIR),
+    destination: (_req, _file, cb) => cb(null, path.join(process.cwd(), 'uploads', 'company')),
     filename: (_req, file, cb) => {
       const safe = String(file.originalname || 'document.pdf').replace(/[^a-zA-Z0-9.\-_]/g, '_');
       const uniq = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
@@ -94,6 +97,16 @@ function signToken(user) {
   );
 }
 
+async function saveOtpAndMail(user, purpose) {
+  const code = String(crypto.randomInt(0, 10000)).padStart(4, '0');
+  const hash = await bcrypt.hash(code, 8);
+  user.emailOtpHash = hash;
+  user.emailOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  user.emailOtpPurpose = purpose;
+  await user.save();
+  await sendOtpEmail(user.email, code, purpose);
+}
+
 router.post(
   '/signup',
   [
@@ -153,7 +166,16 @@ router.post(
       companyId = company?._id ?? null;
     }
 
-    const user = await User.create({ name, email, password, phone, bdId, role, companyId });
+    const user = await User.create({
+      name,
+      email,
+      password,
+      phone,
+      bdId,
+      role,
+      companyId,
+      emailVerified: false,
+    });
     if (role === 'company') {
       const companyFields = [
         'companyDisplayName',
@@ -174,13 +196,14 @@ router.post(
       }
       await CompanyProfile.findOneAndUpdate({ userId: user._id }, { $setOnInsert: profilePayload }, { upsert: true, new: true });
     }
+    await saveOtpAndMail(user, 'signup');
+
     const userObj = user.toObject();
     delete userObj.password;
 
-    // Company accounts require owner approval before login.
-    const needsApproval = role === 'company' && user.companyStatus !== 'approved';
-    const accessToken = needsApproval ? '' : signToken(user);
     return res.status(201).json({
+      needsOtp: true,
+      otpPurpose: 'signup',
       user: {
         id: userObj._id.toString(),
         name: userObj.name,
@@ -190,8 +213,8 @@ router.post(
         role: userObj.role,
         companyStatus: userObj.companyStatus,
       },
-      accessToken,
-      needsApproval,
+      accessToken: '',
+      needsApproval: false,
     });
   }
 );
@@ -223,7 +246,15 @@ router.post(
     if (existingPhone) return res.status(409).json({ message: 'An account with this phone number already exists' });
 
     const bdId = await generateUniqueBdId(name, phone);
-    const user = await User.create({ name, email, password, phone, bdId, role: 'company' });
+    const user = await User.create({
+      name,
+      email,
+      password,
+      phone,
+      bdId,
+      role: 'company',
+      emailVerified: false,
+    });
 
     const file = req.file;
     const storedPath = file ? `/uploads/company/${file.filename}` : '';
@@ -256,10 +287,13 @@ router.post(
       { upsert: true, new: true }
     );
 
-    // Company accounts require approval; don't issue token.
+    await saveOtpAndMail(user, 'signup');
+
     const userObj = user.toObject();
     delete userObj.password;
     return res.status(201).json({
+      needsOtp: true,
+      otpPurpose: 'signup',
       user: {
         id: userObj._id.toString(),
         name: userObj.name,
@@ -270,7 +304,7 @@ router.post(
         companyStatus: userObj.companyStatus,
       },
       accessToken: '',
-      needsApproval: true,
+      needsApproval: false,
     });
   }
 );
@@ -295,11 +329,19 @@ router.post(
       return res.status(401).json({ message: 'Invalid email or password' });
     }
     const bdId = await ensureBdId(user);
+    if (user.emailVerified === false) {
+      return res.status(403).json({
+        message:
+          'Please verify your email first. Enter the 4-digit code we sent when you registered.',
+      });
+    }
     if (user.role === 'company' && user.companyStatus !== 'approved') {
       return res.status(403).json({ message: 'Company account pending approval. Please wait for admin approval.' });
     }
-    const accessToken = signToken(user);
+    await saveOtpAndMail(user, 'login');
     return res.json({
+      needsOtp: true,
+      otpPurpose: 'login',
       user: {
         id: user._id.toString(),
         name: user.name,
@@ -309,8 +351,139 @@ router.post(
         role: user.role,
         companyStatus: user.companyStatus,
       },
-      accessToken,
+      accessToken: '',
     });
+  }
+);
+
+router.post(
+  '/verify-otp',
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('otp').matches(/^\d{4}$/).withMessage('OTP must be 4 digits'),
+    body('purpose').isIn(['signup', 'login']).withMessage('Invalid purpose'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const email = String(req.body.email).toLowerCase();
+    const { otp, purpose } = req.body;
+
+    const user = await User.findOne({ email }).select('+emailOtpHash');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    if (!user.emailOtpHash || user.emailOtpPurpose !== purpose) {
+      return res.status(400).json({
+        message: 'No active verification code. Try again or request a new code.',
+      });
+    }
+    if (!user.emailOtpExpiresAt || user.emailOtpExpiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ message: 'Verification code expired. Request a new one.' });
+    }
+    const match = await bcrypt.compare(otp, user.emailOtpHash);
+    if (!match) {
+      return res.status(400).json({ message: 'Invalid verification code' });
+    }
+
+    user.emailOtpHash = null;
+    user.emailOtpExpiresAt = null;
+    user.emailOtpPurpose = null;
+    if (purpose === 'signup') {
+      user.emailVerified = true;
+    }
+    await user.save();
+
+    const bdId = await ensureBdId(user);
+
+    if (purpose === 'signup') {
+      const companyPendingReview = user.role === 'company' && user.companyStatus !== 'approved';
+      try {
+        await sendWelcomeAfterSignupEmail(user.email, user.name, companyPendingReview);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[mail] welcome after signup failed:', err?.message || err);
+      }
+    }
+
+    if (user.role === 'company' && user.companyStatus !== 'approved') {
+      return res.json({
+        needsOtp: false,
+        otpPurpose: null,
+        needsApproval: true,
+        accessToken: '',
+        user: {
+          id: user._id.toString(),
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          bdId,
+          role: user.role,
+          companyStatus: user.companyStatus,
+        },
+      });
+    }
+
+    const accessToken = signToken(user);
+    return res.json({
+      needsOtp: false,
+      otpPurpose: null,
+      needsApproval: false,
+      accessToken,
+      user: {
+        id: user._id.toString(),
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        bdId,
+        role: user.role,
+        companyStatus: user.companyStatus,
+      },
+    });
+  }
+);
+
+router.post(
+  '/resend-otp',
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('password').notEmpty().withMessage('Password is required'),
+    body('purpose').isIn(['signup', 'login']).withMessage('Invalid purpose'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const email = String(req.body.email).toLowerCase();
+    const { password, purpose } = req.body;
+
+    const user = await User.findOne({ email }).select('+password');
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+    const ok = await user.comparePassword(password);
+    if (!ok) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    if (purpose === 'signup') {
+      if (user.emailVerified !== false) {
+        return res.status(400).json({ message: 'Email is already verified. You can sign in.' });
+      }
+    } else if (purpose === 'login') {
+      if (user.emailVerified === false) {
+        return res.status(403).json({
+          message: 'Verify your email first using the signup code we sent.',
+        });
+      }
+      if (user.role === 'company' && user.companyStatus !== 'approved') {
+        return res.status(403).json({ message: 'Company account pending approval. Please wait for admin approval.' });
+      }
+    }
+
+    await saveOtpAndMail(user, purpose);
+    return res.json({ ok: true, message: 'A new code was sent to your email.' });
   }
 );
 
@@ -328,6 +501,7 @@ router.get('/me', requireAuth, async (req, res) => {
       phone: user.phone,
       bdId,
       role: user.role,
+      companyStatus: user.companyStatus,
     },
   });
 });
