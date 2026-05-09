@@ -1,6 +1,9 @@
 import { Router } from 'express';
 import { body, param, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
+import multer from 'multer';
+import path from 'node:path';
+import fs from 'node:fs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { NetworkFeedPost } from '../models/NetworkFeedPost.js';
@@ -8,6 +11,24 @@ import { effectiveConnectionField } from '../util/connectionField.js';
 import { ensureBdId } from '../services/bdId.js';
 
 const router = Router();
+
+const feedUploadDir = path.join(process.cwd(), 'uploads', 'feed');
+fs.mkdirSync(feedUploadDir, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, feedUploadDir),
+    filename: (_req, file, cb) => {
+      const safe = String(file.originalname || 'img').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 8 * 1024 * 1024, files: 10 },
+  fileFilter: (_req, file, cb) => {
+    const ok = /^image\/(jpeg|png|webp|gif)$/i.test(file.mimetype || '');
+    cb(ok ? null : new Error('Only JPEG, PNG, WebP, or GIF images are allowed'), ok);
+  },
+});
 
 function sendValidationError(res, errors) {
   return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
@@ -25,7 +46,8 @@ function serializePost(doc) {
   if (!a || !a._id) return null;
   return {
     id: doc._id.toString(),
-    body: doc.body,
+    body: doc.body ?? '',
+    images: Array.isArray(doc.images) ? doc.images : [],
     connectionField: doc.connectionField,
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
@@ -75,21 +97,28 @@ router.get('/', async (req, res) => {
   return res.json({ field, posts });
 });
 
-router.post(
-  '/',
-  [body('body').trim().notEmpty().isLength({ max: 2000 }).withMessage('Post text is required (max 2000 chars)')],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendValidationError(res, errors);
-
+router.post('/', upload.array('images', 10), async (req, res) => {
+  try {
     const me = await User.findById(req.user.id);
     if (!me) return res.status(404).json({ message: 'User not found' });
     await ensureBdId(me);
 
+    const body = String(req.body?.body ?? '').trim();
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!body && files.length === 0) {
+      return res.status(400).json({ message: 'Write something or add at least one photo' });
+    }
+    if (body.length > 2000) {
+      return res.status(400).json({ message: 'Post text must be at most 2000 characters' });
+    }
+
     const field = effectiveConnectionField(me);
+    const imagePaths = files.map((f) => `/uploads/feed/${f.filename}`);
+
     const post = await NetworkFeedPost.create({
       author: me._id,
-      body: String(req.body.body).trim(),
+      body,
+      images: imagePaths,
       connectionField: field,
     });
 
@@ -100,8 +129,14 @@ router.post(
     const out = serializePost(populated);
     if (!out) return res.status(500).json({ message: 'Could not load new post' });
     return res.status(201).json({ post: out });
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : '';
+    if (msg.includes('Only JPEG') || msg.includes('File too large')) {
+      return res.status(400).json({ message: msg || 'Invalid upload' });
+    }
+    throw e;
   }
-);
+});
 
 router.patch(
   '/:postId',

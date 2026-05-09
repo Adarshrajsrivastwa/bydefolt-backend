@@ -14,10 +14,11 @@ import { jobsRouter } from './routes/jobs.js';
 import { adminRouter } from './routes/admin.js';
 import { connectionsRouter } from './routes/connections.js';
 import { feedRouter } from './routes/feed.js';
+import { jobSeekerProfileRouter } from './routes/jobSeekerProfile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const maxBody = '12kb';
+const maxBody = '512kb';
 const isProd = process.env.NODE_ENV === 'production';
 const maxRequests = Number.parseInt(process.env.RATE_LIMIT_MAX || '300', 10);
 const windowMs = Number.parseInt(process.env.RATE_LIMIT_WINDOW_MS || String(15 * 60_000), 10);
@@ -93,6 +94,7 @@ export function buildApp() {
   });
   app.use('/api/auth', authLimit, authRouter);
   app.use('/api/company-profile', companyProfileRouter);
+  app.use('/api/job-seeker-profile', jobSeekerProfileRouter);
   app.use('/api/jobs', jobsRouter);
   app.use('/api/connections', connectionsRouter);
   app.use('/api/feed', feedRouter);
