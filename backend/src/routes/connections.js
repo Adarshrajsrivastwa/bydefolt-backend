@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { Connection } from '../models/Connection.js';
+import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
 import { ensureBdId } from '../services/bdId.js';
 
@@ -29,6 +30,16 @@ function userCard(u) {
     headline: o.headline || '',
     field: effectiveConnectionField(o),
   };
+}
+
+/** Fisher–Yates shuffle (copy). */
+function shuffleArray(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 async function excludedPartnerIds(meId) {
@@ -120,6 +131,8 @@ router.get('/suggestions', async (req, res) => {
       .lean();
 
     const suggestions = [];
+    const seenIds = new Set();
+
     for (const u of candidates) {
       if (excluded.has(String(u._id))) continue;
       if (effectiveConnectionField(u) !== myField) continue;
@@ -129,10 +142,77 @@ router.get('/suggestions', async (req, res) => {
         headline: u.headline || '',
         field: effectiveConnectionField(u),
       });
+      seenIds.add(String(u._id));
       if (suggestions.length >= limit) break;
     }
 
-    return res.json({ field: myField, suggestions });
+    let discoverFallback = false;
+    if (suggestions.length < limit) {
+      const rest = candidates.filter((u) => !excluded.has(String(u._id)) && !seenIds.has(String(u._id)));
+      const shuffled = shuffleArray(rest);
+      for (const u of shuffled) {
+        if (suggestions.length >= limit) break;
+        suggestions.push({
+          bdId: u.bdId,
+          name: u.name,
+          headline: u.headline || '',
+          field: effectiveConnectionField(u),
+        });
+        seenIds.add(String(u._id));
+        discoverFallback = true;
+      }
+    }
+
+    return res.json({ field: myField, suggestions, discoverFallback });
+});
+
+router.get('/accepted', async (req, res) => {
+  const me = await User.findById(req.user.id);
+  if (!me) return res.status(404).json({ message: 'User not found' });
+
+  const docs = await Connection.find({
+    status: 'accepted',
+    $or: [{ from: me._id }, { to: me._id }],
+  })
+    .populate('from', 'name bdId headline connectionField role')
+    .populate('to', 'name bdId headline connectionField role')
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const rows = [];
+  const partnerIds = [];
+  const meStr = String(me._id);
+  for (const d of docs) {
+    const from = d.from;
+    const to = d.to;
+    if (!from || !to) continue;
+    const fromId = typeof from === 'object' && from._id ? String(from._id) : String(from);
+    const partner = fromId === meStr ? to : from;
+    if (!partner || typeof partner !== 'object') continue;
+    if (partner.role !== 'jobSeeker') continue;
+    partnerIds.push(partner._id);
+    rows.push({ doc: d, partner });
+  }
+
+  const profiles = await JobSeekerProfile.find({ userId: { $in: partnerIds } })
+    .select('userId profilePhotoUrl')
+    .lean();
+  const photoByUser = new Map(profiles.map((p) => [String(p.userId), p.profilePhotoUrl || '']));
+
+  const connections = rows.map(({ doc, partner }) => {
+    const o = partner;
+    const id = String(o._id);
+    return {
+      connectionId: String(doc._id),
+      bdId: o.bdId,
+      name: o.name,
+      headline: o.headline || '',
+      field: effectiveConnectionField(o),
+      profilePhotoUrl: photoByUser.get(id) || '',
+    };
+  });
+
+  return res.json({ connections });
 });
 
 router.post(
@@ -295,6 +375,31 @@ router.post(
     doc.status = 'ignored';
     await doc.save();
     return res.json({ ok: true, message: 'Rejected' });
+  }
+);
+
+router.delete(
+  '/:connectionId',
+  [param('connectionId').isMongoId().withMessage('Invalid connection id')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+
+    const doc = await Connection.findOne({
+      _id: new mongoose.Types.ObjectId(req.params.connectionId),
+      status: 'accepted',
+      $or: [{ from: me._id }, { to: me._id }],
+    });
+
+    if (!doc) {
+      return res.status(404).json({ message: 'Connection not found' });
+    }
+
+    await Connection.deleteOne({ _id: doc._id });
+    return res.json({ ok: true, message: 'Disconnected' });
   }
 );
 
