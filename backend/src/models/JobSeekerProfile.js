@@ -55,6 +55,8 @@ const jobSeekerProfileSchema = new mongoose.Schema(
       index: true,
     },
     about: { type: String, trim: true, default: '', maxlength: 8000 },
+    /** Public URL path served under `/uploads/...` (e.g. `/uploads/profiles/abc.jpg`). */
+    profilePhotoUrl: { type: String, trim: true, default: '' },
     workExperiences: { type: [workExperienceSchema], default: [] },
     education: { type: [educationSchema], default: [] },
     skills: { type: [String], default: [] },

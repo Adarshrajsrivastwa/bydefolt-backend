@@ -1,9 +1,30 @@
 import { Router } from 'express';
+import multer from 'multer';
+import path from 'node:path';
+import fs from 'node:fs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 
 const router = Router();
+
+const profileUploadDir = path.join(process.cwd(), 'uploads', 'profiles');
+fs.mkdirSync(profileUploadDir, { recursive: true });
+
+const profileUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, profileUploadDir),
+    filename: (_req, file, cb) => {
+      const safe = String(file.originalname || 'photo').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    const ok = /^image\/(jpeg|png|webp)$/i.test(file.mimetype || '');
+    cb(ok ? null : new Error('Only JPEG, PNG, or WebP images are allowed'), ok);
+  },
+});
 
 const MAX_WORK = 24;
 const MAX_EDU = 24;
@@ -15,12 +36,34 @@ function mapProfile(doc) {
   const o = doc.toObject ? doc.toObject() : doc;
   return {
     about: o.about ?? '',
+    profilePhotoUrl: o.profilePhotoUrl ?? '',
     workExperiences: o.workExperiences ?? [],
     education: o.education ?? [],
     skills: o.skills ?? [],
     languages: o.languages ?? [],
     appreciations: o.appreciations ?? [],
   };
+}
+
+function sanitizeProfilePhotoUrl(raw) {
+  if (typeof raw !== 'string') return undefined;
+  const s = raw.trim().slice(0, 500);
+  if (s === '') return '';
+  if (s.startsWith('/uploads/profiles/')) return s;
+  return '';
+}
+
+function unlinkProfilePhotoIfOwned(urlPath) {
+  if (!urlPath || typeof urlPath !== 'string') return;
+  if (!urlPath.startsWith('/uploads/profiles/')) return;
+  const rel = urlPath.replace(/^\//, '');
+  const full = path.join(process.cwd(), rel);
+  if (!full.startsWith(profileUploadDir)) return;
+  try {
+    fs.unlinkSync(full);
+  } catch {
+    // ignore
+  }
 }
 
 function sanitizeWork(list) {
@@ -89,7 +132,17 @@ router.get('/me', async (req, res) => {
   }
   let doc = await JobSeekerProfile.findOne({ userId: user._id });
   if (!doc) {
-    return res.json({ profile: mapProfile({ about: '', workExperiences: [], education: [], skills: [], languages: [], appreciations: [] }) });
+    return res.json({
+      profile: mapProfile({
+        about: '',
+        profilePhotoUrl: '',
+        workExperiences: [],
+        education: [],
+        skills: [],
+        languages: [],
+        appreciations: [],
+      }),
+    });
   }
   return res.json({ profile: mapProfile(doc) });
 });
@@ -102,6 +155,20 @@ router.put('/me', async (req, res) => {
   }
 
   const b = req.body && typeof req.body === 'object' ? req.body : {};
+  const prev = await JobSeekerProfile.findOne({ userId: user._id }).lean();
+  const prevPhoto = prev?.profilePhotoUrl;
+
+  let photoUpdate;
+  if (Object.prototype.hasOwnProperty.call(b, 'profilePhotoUrl')) {
+    const sanitized = sanitizeProfilePhotoUrl(b.profilePhotoUrl);
+    if (sanitized !== undefined) {
+      photoUpdate = sanitized;
+      if (sanitized === '' && prevPhoto) {
+        unlinkProfilePhotoIfOwned(prevPhoto);
+      }
+    }
+  }
+
   const payload = {
     about: typeof b.about === 'string' ? b.about.slice(0, 8000) : '',
     workExperiences: sanitizeWork(b.workExperiences),
@@ -110,6 +177,9 @@ router.put('/me', async (req, res) => {
     languages: sanitizeLanguages(b.languages),
     appreciations: sanitizeAppreciations(b.appreciations),
   };
+  if (photoUpdate !== undefined) {
+    payload.profilePhotoUrl = photoUpdate;
+  }
 
   const doc = await JobSeekerProfile.findOneAndUpdate(
     { userId: user._id },
@@ -118,6 +188,37 @@ router.put('/me', async (req, res) => {
   );
 
   return res.json({ profile: mapProfile(doc) });
+});
+
+router.post('/me/photo', profileUpload.single('photo'), async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.role !== 'jobSeeker') {
+      return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ message: 'Missing image file (field name: photo)' });
+    }
+
+    const publicUrl = `/uploads/profiles/${req.file.filename}`;
+    const prev = await JobSeekerProfile.findOne({ userId: user._id });
+    const prevPhoto = prev?.profilePhotoUrl;
+
+    const doc = await JobSeekerProfile.findOneAndUpdate(
+      { userId: user._id },
+      { $set: { profilePhotoUrl: publicUrl, userId: user._id } },
+      { upsert: true, new: true }
+    );
+
+    if (prevPhoto && prevPhoto !== publicUrl) {
+      unlinkProfilePhotoIfOwned(prevPhoto);
+    }
+
+    return res.json({ profile: mapProfile(doc) });
+  } catch (e) {
+    return res.status(400).json({ message: e?.message || 'Upload failed' });
+  }
 });
 
 export { router as jobSeekerProfileRouter };

@@ -147,21 +147,35 @@ export async function sendTransactionalEmail({ to, subject, text = '', html, rep
  */
 export async function sendOtpEmail(to, code, purpose) {
   const isSignup = purpose === 'signup';
-  const subject = isSignup ? 'Verify your email — ByDefolt' : 'Your sign-in code — ByDefolt';
+  const isReset = purpose === 'passwordReset';
+  const subject = isSignup
+    ? 'Verify your email — ByDefolt'
+    : isReset
+      ? 'Reset your password — ByDefolt'
+      : 'Your sign-in code — ByDefolt';
 
   const text = isSignup
     ? `ByDefolt — verify your account\n\nYour code is: ${code}\n\nThis code expires in 10 minutes. Do not share it with anyone.\n\nIf you did not create an account, ignore this email.\n`
-    : `ByDefolt — sign-in code\n\nYour code is: ${code}\n\nThis code expires in 10 minutes. Do not share it with anyone.\n\nIf you did not try to sign in, ignore this email.\n`;
+    : isReset
+      ? `ByDefolt — password reset\n\nYour code is: ${code}\n\nUse this code in the app to set a new password. Expires in 10 minutes.\n\nIf you did not request a reset, ignore this email.\n`
+      : `ByDefolt — sign-in code\n\nYour code is: ${code}\n\nThis code expires in 10 minutes. Do not share it with anyone.\n\nIf you did not try to sign in, ignore this email.\n`;
+
+  const eyebrow = isSignup ? 'Account verification' : isReset ? 'Password reset' : 'Sign-in security';
+  const title = isSignup ? 'Confirm your email address' : isReset ? 'Reset your password' : 'Your one-time code';
 
   const inner = `
   ${brandHeader({
-    eyebrow: isSignup ? 'Account verification' : 'Sign-in security',
-    title: isSignup ? 'Confirm your email address' : 'Your one-time code',
+    eyebrow,
+    title,
   })}
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
     <tr>
       <td style="padding:28px 28px 8px;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:${BRAND.ink};">
-        <p style="margin:0 0 16px;">Use this <strong>4-digit code</strong> in the app to continue. For your security, the code expires in <strong>10 minutes</strong>.</p>
+        <p style="margin:0 0 16px;">${
+          isReset
+            ? 'Use this <strong>4-digit code</strong> in the app to choose a new password. It expires in <strong>10 minutes</strong>.'
+            : 'Use this <strong>4-digit code</strong> in the app to continue. For your security, the code expires in <strong>10 minutes</strong>.'
+        }</p>
       </td>
     </tr>
     <tr>
@@ -185,7 +199,7 @@ export async function sendOtpEmail(to, code, purpose) {
   </table>`;
 
   const html = emailShell({
-    preheader: `${isSignup ? 'Verify' : 'Sign in'} with code ${code} — expires in 10 minutes.`,
+    preheader: `${isSignup ? 'Verify' : isReset ? 'Reset password' : 'Sign in'} with code ${code} — expires in 10 minutes.`,
     innerHtml: inner,
   });
 

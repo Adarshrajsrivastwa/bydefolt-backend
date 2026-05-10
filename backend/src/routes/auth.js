@@ -68,7 +68,12 @@ async function saveOtpAndMail(user, purpose) {
   user.emailOtpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
   user.emailOtpPurpose = purpose;
   await user.save();
-  await sendOtpEmail(user.email, code, purpose);
+  try {
+    await sendOtpEmail(user.email, code, purpose);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('[auth] OTP email send failed (code still valid in DB / server log):', err?.message || err);
+  }
 }
 
 router.post(
@@ -287,6 +292,19 @@ router.post(
     if (user.role === 'company' && user.companyStatus !== 'approved') {
       return res.status(403).json({ message: 'Company account pending approval. Please wait for admin approval.' });
     }
+
+    // Platform owner: single password step only (no email OTP).
+    if (user.role === 'owner') {
+      const accessToken = signToken(user);
+      return res.json({
+        needsOtp: false,
+        otpPurpose: null,
+        needsApproval: false,
+        accessToken,
+        user: publicUserPayload(user, bdId),
+      });
+    }
+
     await saveOtpAndMail(user, 'login');
     return res.json({
       needsOtp: true,
@@ -294,6 +312,64 @@ router.post(
       user: publicUserPayload(user, bdId),
       accessToken: '',
     });
+  }
+);
+
+router.post(
+  '/forgot-password',
+  [body('email').isEmail().normalizeEmail().withMessage('Valid email is required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const email = String(req.body.email).toLowerCase();
+    const user = await User.findOne({ email });
+    if (user) {
+      await saveOtpAndMail(user, 'passwordReset');
+    }
+    return res.json({
+      ok: true,
+      message: 'If an account exists for this email, we sent a 4-digit code.',
+    });
+  }
+);
+
+router.post(
+  '/reset-password',
+  [
+    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    body('otp').matches(/^\d{4}$/).withMessage('OTP must be 4 digits'),
+    body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const email = String(req.body.email).toLowerCase();
+    const otp = String(req.body.otp);
+    const { newPassword } = req.body;
+
+    const user = await User.findOne({ email }).select('+password +emailOtpHash');
+    if (!user || !user.emailOtpHash || user.emailOtpPurpose !== 'passwordReset') {
+      return res.status(400).json({
+        message: 'Invalid or expired code. Request a new code from Forgot password.',
+      });
+    }
+    if (!user.emailOtpExpiresAt || user.emailOtpExpiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ message: 'Code expired. Request a new password reset.' });
+    }
+    const match = await bcrypt.compare(otp, user.emailOtpHash);
+    if (!match) {
+      return res.status(400).json({ message: 'Invalid verification code' });
+    }
+
+    user.password = newPassword;
+    user.emailOtpHash = null;
+    user.emailOtpExpiresAt = null;
+    user.emailOtpPurpose = null;
+    await user.save();
+
+    return res.json({ ok: true, message: 'Password updated. You can sign in now.' });
   }
 );
 

@@ -6,6 +6,15 @@ import { NetworkFeedPost } from './models/NetworkFeedPost.js';
 const demoes = [
   {
     name: 'Platform owner',
+    email: 'owner@byfelot.com',
+    password: 'owner@123',
+    role: 'owner',
+    phone: '9000088888',
+    bdId: 'OWNERBF8882026',
+    emailVerified: true,
+  },
+  {
+    name: 'Platform owner (legacy)',
     email: 'owner@gmail.com',
     password: '123456',
     role: 'owner',
