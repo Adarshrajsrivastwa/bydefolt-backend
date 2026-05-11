@@ -24,7 +24,8 @@ const chatUpload = multer({
       cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
     },
   }),
-  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  // Allow most common documents/media while keeping a sane cap.
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
 });
 
 function sendValidationError(res, errors) {
