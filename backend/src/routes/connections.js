@@ -1,14 +1,31 @@
 import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import multer from 'multer';
 import { body, param, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { Connection } from '../models/Connection.js';
+import { ChatMessage } from '../models/ChatMessage.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
 import { ensureBdId } from '../services/bdId.js';
 
 const router = Router();
+const chatUploadDir = path.join(process.cwd(), 'uploads', 'chat');
+fs.mkdirSync(chatUploadDir, { recursive: true });
+
+const chatUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, chatUploadDir),
+    filename: (_req, file, cb) => {
+      const safe = String(file.originalname || 'attachment').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+});
 
 function sendValidationError(res, errors) {
   return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
@@ -30,6 +47,34 @@ function userCard(u) {
     headline: o.headline || '',
     field: effectiveConnectionField(o),
   };
+}
+
+function mapChatMessage(doc, meId) {
+  const o = doc.toObject ? doc.toObject() : doc;
+  return {
+    id: String(o._id),
+    connectionId: String(o.connection),
+    senderId: String(o.sender),
+    isMine: String(o.sender) === String(meId),
+    text: o.text || '',
+    attachments: (o.attachments || []).map((a) => ({
+      url: a.url || '',
+      name: a.name || '',
+      mimeType: a.mimeType || '',
+      size: a.size || 0,
+      kind: a.kind || 'file',
+    })),
+    createdAt: o.createdAt,
+  };
+}
+
+async function findAcceptedConnectionForMe(connectionId, meId) {
+  if (!mongoose.Types.ObjectId.isValid(connectionId)) return null;
+  return Connection.findOne({
+    _id: new mongoose.Types.ObjectId(connectionId),
+    status: 'accepted',
+    $or: [{ from: meId }, { to: meId }],
+  });
 }
 
 /** Fisher–Yates shuffle (copy). */
@@ -214,6 +259,75 @@ router.get('/accepted', async (req, res) => {
 
   return res.json({ connections });
 });
+
+router.get(
+  '/:connectionId/messages',
+  [param('connectionId').isMongoId().withMessage('Invalid connection id')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+
+    const connection = await findAcceptedConnectionForMe(req.params.connectionId, me._id);
+    if (!connection) return res.status(404).json({ message: 'Connection not found' });
+
+    const after = String(req.query.after || '').trim();
+    const query = { connection: connection._id };
+    if (after && mongoose.Types.ObjectId.isValid(after)) {
+      query._id = { $gt: new mongoose.Types.ObjectId(after) };
+    }
+
+    const messages = await ChatMessage.find(query).sort({ createdAt: 1, _id: 1 }).limit(150).lean();
+    return res.json({ messages: messages.map((m) => mapChatMessage(m, me._id)) });
+  }
+);
+
+router.post(
+  '/:connectionId/messages',
+  [param('connectionId').isMongoId().withMessage('Invalid connection id')],
+  (req, res, next) => {
+    chatUpload.single('attachment')(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message || 'Attachment upload failed' });
+      return next();
+    });
+  },
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+
+    const connection = await findAcceptedConnectionForMe(req.params.connectionId, me._id);
+    if (!connection) return res.status(404).json({ message: 'Connection not found' });
+
+    const text = String(req.body?.text || '').trim().slice(0, 4000);
+    const attachments = [];
+    if (req.file) {
+      attachments.push({
+        url: `/uploads/chat/${req.file.filename}`,
+        name: req.file.originalname || req.file.filename,
+        mimeType: req.file.mimetype || '',
+        size: req.file.size || 0,
+        kind: String(req.file.mimetype || '').startsWith('image/') ? 'image' : 'file',
+      });
+    }
+    if (!text && attachments.length === 0) {
+      return res.status(400).json({ message: 'Write a message or add an attachment' });
+    }
+
+    const msg = await ChatMessage.create({
+      connection: connection._id,
+      sender: me._id,
+      text,
+      attachments,
+    });
+
+    return res.status(201).json({ message: mapChatMessage(msg, me._id) });
+  }
+);
 
 router.post(
   '/request',

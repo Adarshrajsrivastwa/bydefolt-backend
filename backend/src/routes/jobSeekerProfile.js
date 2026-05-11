@@ -124,6 +124,31 @@ function sanitizeAppreciations(list) {
 
 router.use(requireAuth);
 
+router.get('/by-bd-id/:bdId', async (req, res) => {
+  const bdId = String(req.params.bdId || '').trim();
+  if (!bdId) return res.status(400).json({ message: 'BD ID is required' });
+
+  const user = await User.findOne({ bdId }).select('_id role');
+  if (!user || user.role !== 'jobSeeker') {
+    return res.status(404).json({ message: 'Profile not found' });
+  }
+
+  const doc = await JobSeekerProfile.findOne({ userId: user._id });
+  return res.json({
+    profile: mapProfile(
+      doc || {
+        about: '',
+        profilePhotoUrl: '',
+        workExperiences: [],
+        education: [],
+        skills: [],
+        languages: [],
+        appreciations: [],
+      }
+    ),
+  });
+});
+
 router.get('/me', async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
