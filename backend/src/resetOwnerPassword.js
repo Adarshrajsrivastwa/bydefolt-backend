@@ -11,7 +11,7 @@ import mongoose from 'mongoose';
 import { User } from './models/User.js';
 
 async function main() {
-  const uri = process.env.MONGODB_URI;
+  const uri = process.env.MONGODB_URI_OVERRIDE || process.env.MONGODB_URI;
   if (!uri) {
     console.error('MONGODB_URI is required in .env');
     process.exit(1);

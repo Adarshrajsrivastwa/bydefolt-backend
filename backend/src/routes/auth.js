@@ -11,6 +11,7 @@ import { CompanyProfile } from '../models/CompanyProfile.js';
 import { sendOtpEmail, sendWelcomeAfterSignupEmail } from '../services/mail.js';
 import { ensureBdId, generateUniqueBdId } from '../services/bdId.js';
 import { CONNECTION_FIELDS, effectiveConnectionField, inferConnectionField } from '../util/connectionField.js';
+import { OWNER_LOGIN_REQUIRES_OTP } from '../constants/platformAdminLogin.js';
 
 const router = Router();
 
@@ -293,8 +294,8 @@ router.post(
       return res.status(403).json({ message: 'Company account pending approval. Please wait for admin approval.' });
     }
 
-    // Platform owner: single password step only (no email OTP).
-    if (user.role === 'owner') {
+    // Platform owner: password-only login unless listed in OWNER_LOGIN_REQUIRES_OTP (seeded admin).
+    if (user.role === 'owner' && !OWNER_LOGIN_REQUIRES_OTP.has(user.email)) {
       const accessToken = signToken(user);
       return res.json({
         needsOtp: false,

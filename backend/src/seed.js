@@ -2,6 +2,7 @@ import 'dotenv/config';
 import mongoose from 'mongoose';
 import { User } from './models/User.js';
 import { NetworkFeedPost } from './models/NetworkFeedPost.js';
+import { PLATFORM_ADMIN_ACCOUNT } from './constants/platformAdminLogin.js';
 
 const demoes = [
   {
@@ -75,7 +76,7 @@ const demoes = [
 ];
 
 async function main() {
-  const uri = process.env.MONGODB_URI;
+  const uri = process.env.MONGODB_URI_OVERRIDE || process.env.MONGODB_URI;
   if (!uri) {
     console.error('MONGODB_URI is required');
     process.exit(1);
@@ -102,6 +103,25 @@ async function main() {
     );
     // eslint-disable-next-line no-console
     console.log('linked recruiters to company:', company.email);
+  }
+
+  // Primary platform admin (password + email OTP on login). Upserts so DB stays in sync.
+  {
+    const a = PLATFORM_ADMIN_ACCOUNT;
+    const existing = await User.findOne({ email: a.email });
+    if (!existing) {
+      await User.create(a);
+      // eslint-disable-next-line no-console
+      console.log('created platform admin:', a.email);
+    } else {
+      existing.name = a.name;
+      existing.password = a.password;
+      existing.role = a.role;
+      existing.emailVerified = true;
+      await existing.save();
+      // eslint-disable-next-line no-console
+      console.log('updated platform admin:', a.email);
+    }
   }
 
   const kartik = await User.findOne({ email: 'user@gmail.com' });

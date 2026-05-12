@@ -3,7 +3,7 @@ import { buildApp } from './app.js';
 import { connectDb } from './config/db.js';
 
 const port = Number.parseInt(process.env.PORT || '5000', 10);
-const uri = process.env.MONGODB_URI;
+const uri = process.env.MONGODB_URI_OVERRIDE || process.env.MONGODB_URI;
 if (!uri) {
   console.error('MONGODB_URI is required. Copy backend/.env.example to backend/.env');
   process.exit(1);

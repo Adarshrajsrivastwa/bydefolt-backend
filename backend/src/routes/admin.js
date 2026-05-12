@@ -59,15 +59,25 @@ function mapCompanyRow(user, profile) {
 router.use(requireAuth, requireOwner);
 
 router.get('/companies/approved', async (_req, res) => {
-  const companies = await User.find({ role: 'company', companyStatus: 'approved' }).sort({ createdAt: -1 }).limit(200);
+  const companies = await User.find({ role: 'company', companyStatus: 'approved' }).sort({ createdAt: -1 }).limit(500);
   const ids = companies.map((c) => c._id);
   const profiles = await CompanyProfile.find({ userId: { $in: ids } });
   const byId = new Map(profiles.map((p) => [p.userId.toString(), p]));
   return res.json({ companies: companies.map((c) => mapCompanyRow(c, byId.get(c._id.toString()))) });
 });
 
+/** Company accounts awaiting review: explicit pending, or legacy docs missing companyStatus. */
+const pendingCompanyQuery = {
+  role: 'company',
+  $or: [
+    { companyStatus: 'pending' },
+    { companyStatus: { $exists: false } },
+    { companyStatus: null },
+  ],
+};
+
 router.get('/companies/pending', async (_req, res) => {
-  const companies = await User.find({ role: 'company', companyStatus: 'pending' }).sort({ createdAt: -1 }).limit(200);
+  const companies = await User.find(pendingCompanyQuery).sort({ createdAt: -1 }).limit(500);
   const ids = companies.map((c) => c._id);
   const profiles = await CompanyProfile.find({ userId: { $in: ids } });
   const byId = new Map(profiles.map((p) => [p.userId.toString(), p]));
