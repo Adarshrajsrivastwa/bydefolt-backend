@@ -11,6 +11,7 @@ import mongoSanitize from 'express-mongo-sanitize';
 import { authRouter } from './routes/auth.js';
 import { companyProfileRouter } from './routes/companyProfile.js';
 import { jobsRouter } from './routes/jobs.js';
+import { companiesRouter } from './routes/companies.js';
 import { adminRouter } from './routes/admin.js';
 import { connectionsRouter } from './routes/connections.js';
 import { feedRouter } from './routes/feed.js';
@@ -94,6 +95,7 @@ export function buildApp() {
   });
   app.use('/api/auth', authLimit, authRouter);
   app.use('/api/company-profile', companyProfileRouter);
+  app.use('/api/companies', companiesRouter);
   app.use('/api/job-seeker-profile', jobSeekerProfileRouter);
   app.use('/api/jobs', jobsRouter);
   app.use('/api/connections', connectionsRouter);

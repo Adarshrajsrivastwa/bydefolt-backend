@@ -125,7 +125,7 @@ function sanitizeAppreciations(list) {
 router.use(requireAuth);
 
 router.get('/by-bd-id/:bdId', async (req, res) => {
-  const bdId = String(req.params.bdId || '').trim();
+  const bdId = String(req.params.bdId || '').trim().toUpperCase();
   if (!bdId) return res.status(400).json({ message: 'BD ID is required' });
 
   const user = await User.findOne({ bdId }).select('_id role');
