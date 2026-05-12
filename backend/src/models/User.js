@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { CONNECTION_FIELDS } from '../util/connectionField.js';
 
 const roles = ['jobSeeker', 'recruiter', 'company', 'owner'];
-const companyStatuses = ['pending', 'approved', 'rejected'];
+const companyStatuses = ['pending', 'approved', 'rejected', 'suspended'];
 
 const userSchema = new mongoose.Schema(
   {

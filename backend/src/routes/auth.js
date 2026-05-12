@@ -15,6 +15,12 @@ import { OWNER_LOGIN_REQUIRES_OTP } from '../constants/platformAdminLogin.js';
 
 const router = Router();
 
+function companyAccountBlockedMessage(status) {
+  if (status === 'suspended') return 'Company account has been suspended. Contact platform support.';
+  if (status === 'rejected') return 'Company registration was rejected.';
+  return 'Company account pending approval. Please wait for admin approval.';
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, path.join(process.cwd(), 'uploads', 'company')),
@@ -290,8 +296,13 @@ router.post(
           'Please verify your email first. Enter the 4-digit code we sent when you registered.',
       });
     }
-    if (user.role === 'company' && user.companyStatus !== 'approved') {
-      return res.status(403).json({ message: 'Company account pending approval. Please wait for admin approval.' });
+    if (user.role === 'company') {
+      if (user.companyStatus === 'suspended' || user.companyStatus === 'rejected') {
+        return res.status(403).json({ message: companyAccountBlockedMessage(user.companyStatus) });
+      }
+      if (user.companyStatus !== 'approved') {
+        return res.status(403).json({ message: companyAccountBlockedMessage(user.companyStatus) });
+      }
     }
 
     // Platform owner: password-only login unless listed in OWNER_LOGIN_REQUIRES_OTP (seeded admin).
@@ -426,14 +437,19 @@ router.post(
       }
     }
 
-    if (user.role === 'company' && user.companyStatus !== 'approved') {
-      return res.json({
-        needsOtp: false,
-        otpPurpose: null,
-        needsApproval: true,
-        accessToken: '',
-        user: publicUserPayload(fresh, bdId),
-      });
+    if (user.role === 'company') {
+      if (user.companyStatus === 'suspended' || user.companyStatus === 'rejected') {
+        return res.status(403).json({ message: companyAccountBlockedMessage(user.companyStatus) });
+      }
+      if (user.companyStatus !== 'approved') {
+        return res.json({
+          needsOtp: false,
+          otpPurpose: null,
+          needsApproval: true,
+          accessToken: '',
+          user: publicUserPayload(fresh, bdId),
+        });
+      }
     }
 
     const accessToken = signToken(user);
@@ -480,8 +496,13 @@ router.post(
           message: 'Verify your email first using the signup code we sent.',
         });
       }
-      if (user.role === 'company' && user.companyStatus !== 'approved') {
-        return res.status(403).json({ message: 'Company account pending approval. Please wait for admin approval.' });
+      if (user.role === 'company') {
+        if (user.companyStatus === 'suspended' || user.companyStatus === 'rejected') {
+          return res.status(403).json({ message: companyAccountBlockedMessage(user.companyStatus) });
+        }
+        if (user.companyStatus !== 'approved') {
+          return res.status(403).json({ message: companyAccountBlockedMessage(user.companyStatus) });
+        }
       }
     }
 

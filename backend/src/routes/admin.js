@@ -66,6 +66,14 @@ router.get('/companies/approved', async (_req, res) => {
   return res.json({ companies: companies.map((c) => mapCompanyRow(c, byId.get(c._id.toString()))) });
 });
 
+router.get('/companies/suspended', async (_req, res) => {
+  const companies = await User.find({ role: 'company', companyStatus: 'suspended' }).sort({ createdAt: -1 }).limit(500);
+  const ids = companies.map((c) => c._id);
+  const profiles = await CompanyProfile.find({ userId: { $in: ids } });
+  const byId = new Map(profiles.map((p) => [p.userId.toString(), p]));
+  return res.json({ companies: companies.map((c) => mapCompanyRow(c, byId.get(c._id.toString()))) });
+});
+
 /** Company accounts awaiting review: explicit pending, or legacy docs missing companyStatus. */
 const pendingCompanyQuery = {
   role: 'company',
@@ -92,6 +100,42 @@ router.get(
     if (!errors.isEmpty()) return sendValidationError(res, errors);
     const company = await User.findOne({ _id: req.params.companyId, role: 'company' });
     if (!company) return res.status(404).json({ message: 'Company not found' });
+    const profile = await CompanyProfile.findOne({ userId: company._id });
+    return res.json({ company: mapCompanyRow(company, profile) });
+  }
+);
+
+router.post(
+  '/companies/:companyId/suspend',
+  [param('companyId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const company = await User.findOne({ _id: req.params.companyId, role: 'company' });
+    if (!company) return res.status(404).json({ message: 'Company not found' });
+    if (company.companyStatus !== 'approved') {
+      return res.status(400).json({ message: 'Only approved companies can be suspended.' });
+    }
+    company.companyStatus = 'suspended';
+    await company.save();
+    const profile = await CompanyProfile.findOne({ userId: company._id });
+    return res.json({ company: mapCompanyRow(company, profile) });
+  }
+);
+
+router.post(
+  '/companies/:companyId/unsuspend',
+  [param('companyId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const company = await User.findOne({ _id: req.params.companyId, role: 'company' });
+    if (!company) return res.status(404).json({ message: 'Company not found' });
+    if (company.companyStatus !== 'suspended') {
+      return res.status(400).json({ message: 'Company is not suspended.' });
+    }
+    company.companyStatus = 'approved';
+    await company.save();
     const profile = await CompanyProfile.findOne({ userId: company._id });
     return res.json({ company: mapCompanyRow(company, profile) });
   }
