@@ -26,7 +26,7 @@ import { CompanyProfile } from '../models/CompanyProfile.js';
 
 import { JobSave } from '../models/JobSave.js';
 
-import { JobApplication } from '../models/JobApplication.js';
+import { JobApplication, applicationStages } from '../models/JobApplication.js';
 
 
 
@@ -45,6 +45,40 @@ function sendValidationError(res, errors) {
 function canManageJobs(role) {
 
   return role === 'recruiter' || role === 'company' || role === 'owner';
+
+}
+
+
+
+/** Whether [reqUser] may manage hiring for this job post (same rules as PATCH job). */
+
+async function userOwnsOrCompanyOwnsJob(reqUser, job) {
+
+  if (reqUser.role === 'owner') return true;
+
+  if (String(job.createdBy) === reqUser.id) return true;
+
+  if (reqUser.role === 'company') {
+
+    return User.exists({ _id: job.createdBy, role: 'recruiter', companyId: reqUser.id });
+
+  }
+
+  if (reqUser.role === 'recruiter') {
+
+    const me = await User.findById(reqUser.id).select('companyId').lean();
+
+    if (!me?.companyId) return false;
+
+    const companyOid = me.companyId;
+
+    if (String(job.createdBy) === String(companyOid)) return true;
+
+    return User.exists({ _id: job.createdBy, role: 'recruiter', companyId: companyOid });
+
+  }
+
+  return false;
 
 }
 
@@ -411,6 +445,193 @@ router.get('/mine', requireAuth, async (req, res) => {
   return res.json({ jobs: jobs.map((j) => mapJob(j)) });
 
 });
+
+
+
+/** Aggregated hiring KPIs for jobs the caller manages (company + its recruiters, or self).
+ *  [candidatesReviewed] = total job applications received (all stages); interview/hired from [stage]. */
+
+router.get('/mine/hiring-stats', requireAuth, async (req, res) => {
+
+  if (!canManageJobs(req.user.role)) {
+
+    return res.status(403).json({ message: 'Only recruiter/company/owner can access this' });
+
+  }
+
+
+
+  const q = {};
+
+  if (req.user.role === 'company') {
+
+    const recruiters = await User.find({ role: 'recruiter', companyId: req.user.id }).select('_id');
+
+    const ids = [req.user.id, ...recruiters.map((u) => u._id.toString())];
+
+    q.createdBy = { $in: ids };
+
+  } else if (req.user.role === 'owner') {
+
+    // all jobs
+
+  } else {
+
+    q.createdBy = req.user.id;
+
+  }
+
+
+
+  const jobPosts = await JobPost.find(q).select('_id').lean();
+
+  const jobIds = jobPosts.map((j) => j._id);
+
+  const jobsPosted = jobIds.length;
+
+
+
+  if (jobIds.length === 0) {
+
+    return res.json({
+
+      jobsPosted: 0,
+
+      candidatesReviewed: 0,
+
+      interviewsScheduled: 0,
+
+      hiredCandidates: 0,
+
+    });
+
+  }
+
+
+
+  const agg = await JobApplication.aggregate([
+
+    { $match: { jobPostId: { $in: jobIds } } },
+
+    {
+
+      $addFields: {
+
+        stageNorm: { $ifNull: ['$stage', 'applied'] },
+
+      },
+
+    },
+
+    {
+
+      $group: {
+
+        _id: null,
+
+        candidatesReviewed: { $sum: 1 },
+
+        interviewsScheduled: {
+
+          $sum: { $cond: [{ $eq: ['$stageNorm', 'interview'] }, 1, 0] },
+
+        },
+
+        hiredCandidates: {
+
+          $sum: { $cond: [{ $eq: ['$stageNorm', 'hired'] }, 1, 0] },
+
+        },
+
+      },
+
+    },
+
+  ]);
+
+
+
+  const row = agg[0] || {};
+
+  return res.json({
+
+    jobsPosted,
+
+    candidatesReviewed: row.candidatesReviewed || 0,
+
+    interviewsScheduled: row.interviewsScheduled || 0,
+
+    hiredCandidates: row.hiredCandidates || 0,
+
+  });
+
+});
+
+
+
+router.patch(
+
+  '/:jobId/applications/:userId/stage',
+
+  requireAuth,
+
+  [
+
+    param('jobId').custom((value) => mongoose.Types.ObjectId.isValid(value)),
+
+    param('userId').custom((value) => mongoose.Types.ObjectId.isValid(value)),
+
+    body('stage').isIn(applicationStages),
+
+  ],
+
+  async (req, res) => {
+
+    if (!canManageJobs(req.user.role)) {
+
+      return res.status(403).json({ message: 'Only recruiter/company/owner can update applications' });
+
+    }
+
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+
+
+    const job = await JobPost.findById(req.params.jobId);
+
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+
+
+    const allowed = await userOwnsOrCompanyOwnsJob(req.user, job);
+
+    if (!allowed) {
+
+      return res.status(403).json({ message: 'You can only manage applications for your jobs' });
+
+    }
+
+
+
+    const seekerId = new mongoose.Types.ObjectId(req.params.userId);
+
+    const appDoc = await JobApplication.findOne({ jobPostId: job._id, userId: seekerId });
+
+    if (!appDoc) return res.status(404).json({ message: 'Application not found' });
+
+
+
+    appDoc.stage = req.body.stage;
+
+    await appDoc.save();
+
+    return res.json({ ok: true, stage: appDoc.stage });
+
+  }
+
+);
 
 
 
