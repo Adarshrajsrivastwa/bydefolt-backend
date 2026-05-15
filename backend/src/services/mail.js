@@ -396,3 +396,94 @@ If you believe this is a mistake, please contact support.
 
   return sendTransactionalEmail({ to, subject, text, html });
 }
+
+/** Employee leave approved or rejected — notify the job seeker (Nodemailer). */
+export async function sendLeaveDecisionEmail({
+  to,
+  seekerName,
+  approved,
+  companyName,
+  jobTitle,
+  startDate,
+  endDate,
+  singleDay,
+  reason,
+  reviewNote,
+}) {
+  const firstRaw = String(seekerName || '')
+    .trim()
+    .split(/\s+/)[0];
+  const first = firstRaw ? escapeHtml(firstRaw) : '';
+  const greetingHtml = first ? `Hi ${first},` : 'Hi there,';
+  const greetingText = firstRaw ? `Hi ${firstRaw},` : 'Hi there,';
+  const company = escapeHtml(String(companyName || 'Your employer').trim() || 'Your employer');
+  const title = escapeHtml(String(jobTitle || '').trim());
+  const noteRaw = String(reviewNote || '').trim().slice(0, 500);
+  const noteHtml = noteRaw ? escapeHtml(noteRaw) : '';
+  const reasonRaw = String(reason || '').trim().slice(0, 500);
+  const reasonHtml = reasonRaw ? escapeHtml(reasonRaw) : '';
+
+  const start = String(startDate || '').trim();
+  const end = String(endDate || '').trim();
+  const dateText =
+    singleDay || !end || start === end ? start : `${start} to ${end}`;
+  const dateHtml = escapeHtml(dateText);
+
+  const statusWord = approved ? 'approved' : 'rejected';
+  const subject = approved
+    ? `Leave approved — ${companyName || 'ByDefolt'}`
+    : `Leave update — ${companyName || 'ByDefolt'}`;
+
+  const text = `${greetingText}
+
+Your leave request has been ${statusWord} by ${companyName || 'your employer'}.
+
+Dates: ${dateText}
+${title ? `Role: ${jobTitle}\n` : ''}${reasonRaw ? `Reason you submitted: ${reasonRaw}\n` : ''}${noteRaw ? `Note from HR: ${noteRaw}\n` : ''}
+Open the ByDefolt app → Apply leave to see your leave status.
+
+— The ByDefolt team
+`;
+
+  const statusColor = approved ? BRAND.teal : '#C17D2A';
+  const statusTitle = approved ? 'Leave approved' : 'Leave not approved';
+  const statusEyebrow = approved ? 'Approved' : 'Update';
+
+  const noteBlock = noteHtml
+    ? `<p style="margin:14px 0 0;padding:14px 16px;background-color:${BRAND.codeBg};border-radius:12px;border-left:4px solid ${statusColor};font-size:14px;color:${BRAND.ink};"><strong>Note from HR:</strong> ${noteHtml}</p>`
+    : '';
+
+  const reasonBlock = reasonHtml
+    ? `<p style="margin:0 0 8px;font-size:14px;color:${BRAND.muted};"><strong>Your reason:</strong> ${reasonHtml}</p>`
+    : '';
+
+  const inner = `
+  ${brandHeader({ eyebrow: statusEyebrow, title: statusTitle })}
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+    <tr>
+      <td style="padding:28px 28px 28px;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.55;color:${BRAND.ink};">
+        <p style="margin:0 0 16px;font-size:17px;font-weight:700;color:${BRAND.ink};">${greetingHtml}</p>
+        <p style="margin:0 0 14px;">Your leave request has been <strong style="color:${statusColor};">${statusWord}</strong> by <strong style="color:${BRAND.primary};">${company}</strong>.</p>
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:${BRAND.codeBg};border-radius:12px;border:1px solid ${BRAND.border};">
+          <tr>
+            <td style="padding:16px 18px;font-size:14px;color:${BRAND.ink};">
+              <p style="margin:0 0 6px;"><strong>Dates:</strong> ${dateHtml}</p>
+              ${title ? `<p style="margin:0 0 6px;"><strong>Role:</strong> ${title}</p>` : ''}
+              ${reasonBlock}
+            </td>
+          </tr>
+        </table>
+        ${noteBlock}
+        <p style="margin:20px 0 0;font-size:14px;color:${BRAND.muted};">Open the ByDefolt app → <strong>Apply leave</strong> to view your leave history and status.</p>
+        <p style="margin:22px 0 0;font-size:14px;color:${BRAND.muted};">Regards,<br><strong style="color:${BRAND.primary};">The ByDefolt team</strong></p>
+      </td>
+    </tr>
+  </table>`;
+
+  const html = emailShell({
+    preheader: `Your leave request was ${statusWord}. Dates: ${dateText}.`,
+    innerHtml: inner,
+  });
+
+  return sendTransactionalEmail({ to, subject, text, html });
+}

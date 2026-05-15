@@ -9,6 +9,7 @@ import {
   seekerMayRequestLeaveForCompany,
 } from '../services/currentEmployer.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
+import { sendLeaveDecisionEmail } from '../services/mail.js';
 
 const router = Router();
 
@@ -282,14 +283,49 @@ router.post(
       return res.status(400).json({ message: 'This leave request is no longer pending' });
     }
 
-    doc.status = req.body.decision === 'approve' ? 'approved' : 'rejected';
+    const approved = req.body.decision === 'approve';
+    doc.status = approved ? 'approved' : 'rejected';
     doc.reviewedBy = ctx.reviewer._id;
     doc.reviewedAt = new Date();
     doc.reviewNote = String(req.body.note || '').trim();
     await doc.save();
 
+    const seeker = await User.findById(doc.seekerId).select('name email').lean();
+    const prof = await CompanyProfile.findOne({ userId: doc.companyUserId })
+      .select('companyDisplayName legalRegisteredName')
+      .lean();
+    const companyName =
+      doc.companyName?.trim() ||
+      prof?.companyDisplayName?.trim() ||
+      prof?.legalRegisteredName?.trim() ||
+      '';
+
+    if (seeker?.email) {
+      try {
+        await sendLeaveDecisionEmail({
+          to: seeker.email,
+          seekerName: seeker.name || '',
+          approved,
+          companyName,
+          jobTitle: doc.jobTitle || '',
+          startDate: doc.startDate,
+          endDate: doc.endDate,
+          singleDay: Boolean(doc.singleDay),
+          reason: doc.reason || '',
+          reviewNote: doc.reviewNote || '',
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[leaves] leave decision email failed:', err?.message || err);
+      }
+    }
+
+    const populated = await EmployeeLeaveRequest.findById(doc._id)
+      .populate('seekerId', 'name email bdId')
+      .lean();
+
     return res.json({
-      request: serializeLeave(doc.toObject()),
+      request: serializeLeave(populated || doc.toObject(), populated?.seekerId, companyName),
     });
   }
 );
