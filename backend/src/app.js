@@ -16,6 +16,7 @@ import { adminRouter } from './routes/admin.js';
 import { connectionsRouter } from './routes/connections.js';
 import { feedRouter } from './routes/feed.js';
 import { jobSeekerProfileRouter } from './routes/jobSeekerProfile.js';
+import { leavesRouter } from './routes/leaves.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -100,6 +101,7 @@ export function buildApp() {
   app.use('/api/jobs', jobsRouter);
   app.use('/api/connections', connectionsRouter);
   app.use('/api/feed', feedRouter);
+  app.use('/api/leaves', leavesRouter);
   app.use('/api/admin', adminRouter);
   app.use((_req, res) => {
     return res.status(404).json({ message: 'Not found' });
