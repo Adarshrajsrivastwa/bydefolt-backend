@@ -1,16 +1,51 @@
 import { Router } from 'express';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
+import fs from 'node:fs';
+import path from 'node:path';
+import multer from 'multer';
 import { requireAuth } from '../middleware/auth.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
 import { User } from '../models/User.js';
 import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
+import { UserNotification } from '../models/UserNotification.js';
 import { ensureBdId } from '../services/bdId.js';
 import {
   ensurePendingJoinRequestsFromRoster,
   listCompanyEmployees,
 } from '../services/companyEmployees.js';
+import {
+  countCompanyNoticeRecipients,
+  resolveCompanyNoticeRecipientIds,
+} from '../services/companyNoticeRecipients.js';
 
 const router = Router();
+
+const noticeUploadDir = path.join(process.cwd(), 'uploads', 'notices');
+fs.mkdirSync(noticeUploadDir, { recursive: true });
+
+function isAllowedNoticeImage(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  const name = String(file.originalname || '').toLowerCase();
+  if (/^image\/(jpeg|jpg|pjpeg|png|x-png|webp|gif)$/i.test(mime)) return true;
+  if (mime === 'application/octet-stream' && /\.(jpe?g|png|webp|gif)$/i.test(name)) {
+    return true;
+  }
+  return false;
+}
+
+const noticeUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, noticeUploadDir),
+    filename: (_req, file, cb) => {
+      const safe = String(file.originalname || 'img').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    cb(isAllowedNoticeImage(file) ? null : new Error('Only JPEG, PNG, WebP, or GIF images are allowed'), isAllowedNoticeImage(file));
+  },
+});
 
 function mapProfile(doc) {
   return {
@@ -403,6 +438,96 @@ router.get('/employees', requireAuth, async (req, res) => {
   const employees = await listCompanyEmployees(ctx.companyUserId.toString());
   return res.json({ employees, count: employees.length });
 });
+
+/** How many users will receive a notice for this audience (company / HR). */
+router.get(
+  '/notices/recipient-count',
+  requireAuth,
+  [query('audience').isIn(['all', 'hr', 'employee']).withMessage('Invalid audience')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
+    }
+    const ctx = await getEmployerReviewContext(req);
+    if (!ctx.ok) return res.status(ctx.status).json({ message: ctx.message });
+
+    const audience = String(req.query.audience).toLowerCase();
+    const count = await countCompanyNoticeRecipients(ctx.companyUserId.toString(), audience);
+    return res.json({ count, audience });
+  }
+);
+
+/** Send in-app notice to company-linked HR and/or employees. */
+router.post(
+  '/notices',
+  requireAuth,
+  (req, res, next) => {
+    noticeUpload.single('image')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || 'Invalid upload' });
+      }
+      next();
+    });
+  },
+  [
+    body('title').isString().trim().isLength({ min: 1, max: 200 }),
+    body('body').isString().trim().isLength({ min: 1, max: 4000 }),
+    body('audience').isIn(['all', 'hr', 'employee']).withMessage('Invalid audience'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
+    }
+
+    const ctx = await getEmployerReviewContext(req);
+    if (!ctx.ok) return res.status(ctx.status).json({ message: ctx.message });
+
+    const audience = String(req.body.audience).toLowerCase();
+    const companyUserId = ctx.companyUserId.toString();
+    const recipientIds = await resolveCompanyNoticeRecipientIds(companyUserId, audience);
+
+    if (!recipientIds.length) {
+      return res.status(400).json({
+        message:
+          audience === 'hr'
+            ? 'No HR recruiters linked to your company. Appoint HR first.'
+            : audience === 'employee'
+              ? 'No employees linked to your company yet.'
+              : 'No HR or employees linked to your company yet.',
+      });
+    }
+
+    let imageUrl = '';
+    if (req.file?.filename) {
+      imageUrl = `/uploads/notices/${req.file.filename}`;
+    }
+
+    const title = String(req.body.title).trim();
+    const bodyText = String(req.body.body).trim();
+    const companyOid = ctx.companyUserId;
+    const sentBy = ctx.reviewer._id;
+
+    const docs = recipientIds.map((rid) => ({
+      recipientId: rid,
+      companyUserId: companyOid,
+      sentBy,
+      audience,
+      title,
+      body: bodyText,
+      imageUrl,
+    }));
+
+    await UserNotification.insertMany(docs, { ordered: false });
+
+    return res.status(201).json({
+      sentCount: recipientIds.length,
+      audience,
+      title,
+    });
+  }
+);
 
 router.post(
   '/employer-requests/:requestId/decision',
