@@ -7,6 +7,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
 import { sendCompanyApprovedEmail, sendCompanyRejectedEmail } from '../services/mail.js';
+import { ensureBdId } from '../services/bdId.js';
+import { accountStatuses } from '../models/User.js';
 
 const router = Router();
 
@@ -224,6 +226,150 @@ router.delete(
       ok: true,
       message: 'Company rejected and deleted. They can register again.',
     });
+  }
+);
+
+function mapRecruiterRow(user, companyUser, companyProfile) {
+  const companyName =
+    companyProfile?.companyDisplayName?.trim() ||
+    companyUser?.name?.trim() ||
+    '';
+  return {
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    bdId: user.bdId,
+    role: user.role,
+    accountStatus: user.accountStatus || 'active',
+    companyId: user.companyId ? user.companyId.toString() : '',
+    companyName,
+    createdAt: user.createdAt,
+  };
+}
+
+/** All platform recruiters (HR seats). */
+router.get('/recruiters', async (_req, res) => {
+  const recruiters = await User.find({ role: 'recruiter' }).sort({ createdAt: -1 }).limit(500);
+  const companyIds = [
+    ...new Set(
+      recruiters
+        .map((r) => (r.companyId ? r.companyId.toString() : ''))
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(id))
+    ),
+  ];
+  const companyOids = companyIds.map((id) => new mongoose.Types.ObjectId(id));
+  const [companyUsers, profiles] = await Promise.all([
+    companyOids.length
+      ? User.find({ _id: { $in: companyOids }, role: 'company' }).select('name')
+      : [],
+    companyOids.length ? CompanyProfile.find({ userId: { $in: companyOids } }) : [],
+  ]);
+  const companyById = new Map(companyUsers.map((c) => [c._id.toString(), c]));
+  const profileById = new Map(profiles.map((p) => [p.userId.toString(), p]));
+
+  const rows = [];
+  for (const doc of recruiters) {
+    const bd = await ensureBdId(doc);
+    if (bd) doc.bdId = bd;
+    const cid = doc.companyId ? doc.companyId.toString() : '';
+    rows.push(
+      mapRecruiterRow(doc, cid ? companyById.get(cid) : null, cid ? profileById.get(cid) : null)
+    );
+  }
+
+  return res.json({ recruiters: rows });
+});
+
+router.patch(
+  '/recruiters/:recruiterId',
+  [
+    param('recruiterId').custom((v) => mongoose.Types.ObjectId.isValid(v)),
+    body('name').optional().trim().notEmpty().isLength({ max: 120 }),
+    body('phone').optional().trim().matches(/^\d{10}$/).withMessage('Phone must be 10 digits'),
+    body('accountStatus').optional().isIn(accountStatuses),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const user = await User.findOne({ _id: req.params.recruiterId, role: 'recruiter' });
+    if (!user) return res.status(404).json({ message: 'HR user not found' });
+
+    if (Object.hasOwn(req.body, 'name')) user.name = req.body.name;
+    if (Object.hasOwn(req.body, 'phone')) user.phone = req.body.phone;
+    if (Object.hasOwn(req.body, 'accountStatus')) user.accountStatus = req.body.accountStatus;
+
+    await user.save();
+
+    let companyUser = null;
+    let profile = null;
+    if (user.companyId) {
+      companyUser = await User.findById(user.companyId);
+      profile = await CompanyProfile.findOne({ userId: user.companyId });
+    }
+    const bd = await ensureBdId(user);
+    return res.json({ recruiter: mapRecruiterRow(user, companyUser, profile) });
+  }
+);
+
+router.post(
+  '/recruiters/:recruiterId/suspend',
+  [param('recruiterId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const user = await User.findOne({ _id: req.params.recruiterId, role: 'recruiter' });
+    if (!user) return res.status(404).json({ message: 'HR user not found' });
+    user.accountStatus = 'suspended';
+    await user.save();
+    let companyUser = null;
+    let profile = null;
+    if (user.companyId) {
+      companyUser = await User.findById(user.companyId);
+      profile = await CompanyProfile.findOne({ userId: user.companyId });
+    }
+    return res.json({ recruiter: mapRecruiterRow(user, companyUser, profile) });
+  }
+);
+
+router.post(
+  '/recruiters/:recruiterId/freeze',
+  [param('recruiterId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const user = await User.findOne({ _id: req.params.recruiterId, role: 'recruiter' });
+    if (!user) return res.status(404).json({ message: 'HR user not found' });
+    user.accountStatus = 'frozen';
+    await user.save();
+    let companyUser = null;
+    let profile = null;
+    if (user.companyId) {
+      companyUser = await User.findById(user.companyId);
+      profile = await CompanyProfile.findOne({ userId: user.companyId });
+    }
+    return res.json({ recruiter: mapRecruiterRow(user, companyUser, profile) });
+  }
+);
+
+router.post(
+  '/recruiters/:recruiterId/activate',
+  [param('recruiterId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const user = await User.findOne({ _id: req.params.recruiterId, role: 'recruiter' });
+    if (!user) return res.status(404).json({ message: 'HR user not found' });
+    user.accountStatus = 'active';
+    await user.save();
+    let companyUser = null;
+    let profile = null;
+    if (user.companyId) {
+      companyUser = await User.findById(user.companyId);
+      profile = await CompanyProfile.findOne({ userId: user.companyId });
+    }
+    return res.json({ recruiter: mapRecruiterRow(user, companyUser, profile) });
   }
 );
 

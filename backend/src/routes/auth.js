@@ -316,6 +316,20 @@ router.post(
       }
     }
 
+    const accountStatus = user.accountStatus || 'active';
+    if (user.role === 'recruiter' || user.role === 'jobSeeker') {
+      if (accountStatus === 'suspended') {
+        return res.status(403).json({
+          message: 'Your account has been suspended. Contact platform support.',
+        });
+      }
+      if (accountStatus === 'frozen') {
+        return res.status(403).json({
+          message: 'Your account is frozen. Contact platform support.',
+        });
+      }
+    }
+
     // Platform owner: password-only login unless listed in OWNER_LOGIN_REQUIRES_OTP (seeded admin).
     if (user.role === 'owner' && !OWNER_LOGIN_REQUIRES_OTP.has(user.email)) {
       const accessToken = signToken(user);

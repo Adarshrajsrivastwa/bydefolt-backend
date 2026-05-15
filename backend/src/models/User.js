@@ -4,6 +4,7 @@ import { CONNECTION_FIELDS } from '../util/connectionField.js';
 
 const roles = ['jobSeeker', 'recruiter', 'company', 'owner'];
 const companyStatuses = ['pending', 'approved', 'rejected', 'suspended'];
+const accountStatuses = ['active', 'suspended', 'frozen'];
 
 const userSchema = new mongoose.Schema(
   {
@@ -24,6 +25,13 @@ const userSchema = new mongoose.Schema(
       default: function defaultCompanyStatus() {
         return this.role === 'company' ? 'pending' : 'approved';
       },
+      index: true,
+    },
+    /** Platform moderation for job seekers / recruiters (owner console). */
+    accountStatus: {
+      type: String,
+      enum: accountStatuses,
+      default: 'active',
       index: true,
     },
     // If this user is a recruiter/HR associated to a company account, store the company user id here.
@@ -80,4 +88,4 @@ userSchema.set('toJSON', {
 });
 
 export const User = mongoose.model('User', userSchema);
-export { roles as userRoles, companyStatuses };
+export { roles as userRoles, companyStatuses, accountStatuses };
