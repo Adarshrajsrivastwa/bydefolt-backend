@@ -226,33 +226,127 @@ router.put('/me', async (req, res) => {
     }
   }
 
-  const payload = {
-    about: typeof b.about === 'string' ? b.about.slice(0, 8000) : '',
-    workExperiences: sanitizeWork(b.workExperiences),
-    education: sanitizeEducation(b.education),
-    skills: sanitizeSkills(b.skills),
-    languages: sanitizeLanguages(b.languages),
-    appreciations: sanitizeAppreciations(b.appreciations),
-  };
+  const payload = { userId: user._id };
+  if (typeof b.about === 'string') {
+    payload.about = b.about.slice(0, 8000);
+  } else if (!prev) {
+    payload.about = '';
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'workExperiences')) {
+    payload.workExperiences = sanitizeWork(b.workExperiences);
+  } else if (!prev) {
+    payload.workExperiences = [];
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'education')) {
+    payload.education = sanitizeEducation(b.education);
+  } else if (!prev) {
+    payload.education = [];
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'skills')) {
+    payload.skills = sanitizeSkills(b.skills);
+  } else if (!prev) {
+    payload.skills = [];
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'languages')) {
+    payload.languages = sanitizeLanguages(b.languages);
+  } else if (!prev) {
+    payload.languages = [];
+  }
+  if (Object.prototype.hasOwnProperty.call(b, 'appreciations')) {
+    payload.appreciations = sanitizeAppreciations(b.appreciations);
+  } else if (!prev) {
+    payload.appreciations = [];
+  }
   if (photoUpdate !== undefined) {
     payload.profilePhotoUrl = photoUpdate;
   }
 
   const doc = await JobSeekerProfile.findOneAndUpdate(
     { userId: user._id },
-    { $set: { ...payload, userId: user._id } },
+    { $set: payload },
     { upsert: true, new: true }
   );
 
   if (Object.prototype.hasOwnProperty.call(b, 'workExperiences')) {
     await clearStaleEmployerRequestsForSeeker(
       user._id.toString(),
-      prev?.workExperiences ?? [],
-      payload.workExperiences
+      sanitizeWork(prev?.workExperiences ?? []),
+      payload.workExperiences ?? sanitizeWork(doc.workExperiences)
     );
   }
 
   return res.json({ profile: await mapProfileForSeeker(doc, user._id.toString()) });
+});
+
+function parseProfileIndex(raw, label) {
+  const index = Number.parseInt(String(raw ?? ''), 10);
+  if (!Number.isFinite(index) || index < 0) {
+    return { error: `Invalid ${label} index` };
+  }
+  return { index };
+}
+
+/** Remove one work experience row; clears employer verification for removed companies. */
+router.delete('/me/work-experiences/:index', async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (user.role !== 'jobSeeker') {
+    return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+  }
+
+  const parsed = parseProfileIndex(req.params.index, 'work experience');
+  if (parsed.error) return res.status(400).json({ message: parsed.error });
+
+  const doc = await JobSeekerProfile.findOne({ userId: user._id });
+  const previous = sanitizeWork(doc?.workExperiences ?? []);
+  if (parsed.index >= previous.length) {
+    return res.status(404).json({ message: 'Work experience entry not found' });
+  }
+
+  const next = [...previous];
+  next.splice(parsed.index, 1);
+
+  const updated = await JobSeekerProfile.findOneAndUpdate(
+    { userId: user._id },
+    { $set: { workExperiences: next, userId: user._id } },
+    { upsert: true, new: true }
+  );
+
+  await clearStaleEmployerRequestsForSeeker(
+    user._id.toString(),
+    previous,
+    next
+  );
+
+  return res.json({ profile: await mapProfileForSeeker(updated, user._id.toString()) });
+});
+
+/** Remove one education row by index (0-based, same order as stored on profile). */
+router.delete('/me/education/:index', async (req, res) => {
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (user.role !== 'jobSeeker') {
+    return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+  }
+
+  const parsed = parseProfileIndex(req.params.index, 'education');
+  if (parsed.error) return res.status(400).json({ message: parsed.error });
+
+  const doc = await JobSeekerProfile.findOne({ userId: user._id });
+  const current = sanitizeEducation(doc?.education ?? []);
+  if (parsed.index >= current.length) {
+    return res.status(404).json({ message: 'Education entry not found' });
+  }
+
+  current.splice(parsed.index, 1);
+
+  const updated = await JobSeekerProfile.findOneAndUpdate(
+    { userId: user._id },
+    { $set: { education: current, userId: user._id } },
+    { upsert: true, new: true }
+  );
+
+  return res.json({ profile: await mapProfileForSeeker(updated, user._id.toString()) });
 });
 
 router.post('/me/photo', profileUpload.single('photo'), async (req, res) => {
