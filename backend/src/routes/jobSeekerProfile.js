@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
+import { enrichWorkExperiencesWithVerification } from '../services/workExperienceVerification.js';
+import mongoose from 'mongoose';
 
 const router = Router();
 
@@ -34,15 +36,32 @@ const MAX_APP = 40;
 
 function mapProfile(doc) {
   const o = doc.toObject ? doc.toObject() : doc;
+  const aboutRaw = o.about;
+  const about =
+    typeof aboutRaw === 'string'
+      ? aboutRaw
+      : String(aboutRaw ?? '').slice(0, 8000);
+  const photoRaw = o.profilePhotoUrl;
+  const profilePhotoUrl =
+    typeof photoRaw === 'string' ? photoRaw : String(photoRaw ?? '');
   return {
-    about: o.about ?? '',
-    profilePhotoUrl: o.profilePhotoUrl ?? '',
-    workExperiences: o.workExperiences ?? [],
-    education: o.education ?? [],
-    skills: o.skills ?? [],
-    languages: o.languages ?? [],
-    appreciations: o.appreciations ?? [],
+    about,
+    profilePhotoUrl,
+    workExperiences: sanitizeWork(o.workExperiences),
+    education: sanitizeEducation(o.education),
+    skills: sanitizeSkills(o.skills),
+    languages: sanitizeLanguages(o.languages),
+    appreciations: sanitizeAppreciations(o.appreciations),
   };
+}
+
+async function mapProfileForSeeker(doc, seekerUserId) {
+  const base = mapProfile(doc);
+  base.workExperiences = await enrichWorkExperiencesWithVerification(
+    base.workExperiences,
+    seekerUserId
+  );
+  return base;
 }
 
 function sanitizeProfilePhotoUrl(raw) {
@@ -68,14 +87,21 @@ function unlinkProfilePhotoIfOwned(urlPath) {
 
 function sanitizeWork(list) {
   if (!Array.isArray(list)) return [];
-  return list.slice(0, MAX_WORK).map((x) => ({
-    jobTitle: String(x.jobTitle ?? '').slice(0, 200),
-    company: String(x.company ?? '').slice(0, 200),
-    startDate: String(x.startDate ?? '').slice(0, 40),
-    endDate: String(x.endDate ?? '').slice(0, 40),
-    description: String(x.description ?? '').slice(0, 4000),
-    currentPosition: Boolean(x.currentPosition),
-  }));
+  return list.slice(0, MAX_WORK).map((x) => {
+    let companyUserId = String(x.companyUserId ?? '').trim();
+    if (companyUserId && !mongoose.Types.ObjectId.isValid(companyUserId)) {
+      companyUserId = '';
+    }
+    return {
+      jobTitle: String(x.jobTitle ?? '').slice(0, 200),
+      company: String(x.company ?? '').slice(0, 200),
+      startDate: String(x.startDate ?? '').slice(0, 40),
+      endDate: String(x.endDate ?? '').slice(0, 40),
+      description: String(x.description ?? '').slice(0, 4000),
+      currentPosition: Boolean(x.currentPosition),
+      companyUserId,
+    };
+  });
 }
 
 function sanitizeEducation(list) {
@@ -134,19 +160,19 @@ router.get('/by-bd-id/:bdId', async (req, res) => {
   }
 
   const doc = await JobSeekerProfile.findOne({ userId: user._id });
-  return res.json({
-    profile: mapProfile(
-      doc || {
-        about: '',
-        profilePhotoUrl: '',
-        workExperiences: [],
-        education: [],
-        skills: [],
-        languages: [],
-        appreciations: [],
-      }
-    ),
-  });
+  const profile = await mapProfileForSeeker(
+    doc || {
+      about: '',
+      profilePhotoUrl: '',
+      workExperiences: [],
+      education: [],
+      skills: [],
+      languages: [],
+      appreciations: [],
+    },
+    user._id.toString()
+  );
+  return res.json({ profile });
 });
 
 router.get('/me', async (req, res) => {
@@ -158,18 +184,21 @@ router.get('/me', async (req, res) => {
   let doc = await JobSeekerProfile.findOne({ userId: user._id });
   if (!doc) {
     return res.json({
-      profile: mapProfile({
-        about: '',
-        profilePhotoUrl: '',
-        workExperiences: [],
-        education: [],
-        skills: [],
-        languages: [],
-        appreciations: [],
-      }),
+      profile: await mapProfileForSeeker(
+        {
+          about: '',
+          profilePhotoUrl: '',
+          workExperiences: [],
+          education: [],
+          skills: [],
+          languages: [],
+          appreciations: [],
+        },
+        user._id.toString()
+      ),
     });
   }
-  return res.json({ profile: mapProfile(doc) });
+  return res.json({ profile: await mapProfileForSeeker(doc, user._id.toString()) });
 });
 
 router.put('/me', async (req, res) => {
@@ -212,7 +241,7 @@ router.put('/me', async (req, res) => {
     { upsert: true, new: true }
   );
 
-  return res.json({ profile: mapProfile(doc) });
+  return res.json({ profile: await mapProfileForSeeker(doc, user._id.toString()) });
 });
 
 router.post('/me/photo', profileUpload.single('photo'), async (req, res) => {
@@ -240,7 +269,7 @@ router.post('/me/photo', profileUpload.single('photo'), async (req, res) => {
       unlinkProfilePhotoIfOwned(prevPhoto);
     }
 
-    return res.json({ profile: mapProfile(doc) });
+    return res.json({ profile: await mapProfileForSeeker(doc, user._id.toString()) });
   } catch (e) {
     return res.status(400).json({ message: e?.message || 'Upload failed' });
   }

@@ -138,21 +138,43 @@ router.post('/', upload.array('images', 10), async (req, res) => {
   }
 });
 
-router.patch(
-  '/:postId',
-  [
-    param('postId').isMongoId().withMessage('Invalid post id'),
-    body('body').trim().notEmpty().isLength({ max: 2000 }).withMessage('Post text is required (max 2000 chars)'),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return sendValidationError(res, errors);
+function parseKeepImages(raw) {
+  if (raw == null || raw === '') return [];
+  try {
+    const parsed = JSON.parse(String(raw));
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((p) => typeof p === 'string' && p.startsWith('/uploads/feed/'))
+      .slice(0, 10);
+  } catch {
+    return [];
+  }
+}
+
+router.patch('/:postId', (req, res, next) => {
+  const ct = String(req.headers['content-type'] || '');
+  if (ct.includes('multipart/form-data')) {
+    return upload.array('images', 10)(req, res, (err) => {
+      if (err) {
+        const msg = err && err.message ? String(err.message) : 'Invalid upload';
+        return res.status(400).json({ message: msg });
+      }
+      return next();
+    });
+  }
+  return next();
+}, async (req, res) => {
+  try {
+    const postId = req.params.postId;
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+      return res.status(400).json({ message: 'Invalid post id' });
+    }
 
     const me = await User.findById(req.user.id);
     if (!me) return res.status(404).json({ message: 'User not found' });
 
     const post = await NetworkFeedPost.findOne({
-      _id: new mongoose.Types.ObjectId(req.params.postId),
+      _id: new mongoose.Types.ObjectId(postId),
       author: me._id,
     });
 
@@ -160,7 +182,32 @@ router.patch(
       return res.status(404).json({ message: 'Post not found or not yours to edit' });
     }
 
-    post.body = String(req.body.body).trim();
+    const isMultipart = String(req.headers['content-type'] || '').includes('multipart/form-data');
+    const text = String(req.body?.body ?? '').trim();
+
+    if (isMultipart) {
+      const keep = parseKeepImages(req.body?.keepImages);
+      const files = Array.isArray(req.files) ? req.files : [];
+      const newPaths = files.map((f) => `/uploads/feed/${f.filename}`);
+      const images = [...keep, ...newPaths].slice(0, 10);
+      if (!text && images.length === 0) {
+        return res.status(400).json({ message: 'Write something or keep at least one photo' });
+      }
+      if (text.length > 2000) {
+        return res.status(400).json({ message: 'Post text must be at most 2000 characters' });
+      }
+      post.body = text;
+      post.images = images;
+    } else {
+      if (!text) {
+        return res.status(400).json({ message: 'Post text is required (max 2000 chars)' });
+      }
+      if (text.length > 2000) {
+        return res.status(400).json({ message: 'Post text must be at most 2000 characters' });
+      }
+      post.body = text;
+    }
+
     await post.save();
 
     const populated = await NetworkFeedPost.findById(post._id)
@@ -170,7 +217,13 @@ router.patch(
     const out = serializePost(populated);
     if (!out) return res.status(500).json({ message: 'Could not load post' });
     return res.json({ post: out });
+  } catch (e) {
+    const msg = e && e.message ? String(e.message) : '';
+    if (msg.includes('Only JPEG') || msg.includes('File too large')) {
+      return res.status(400).json({ message: msg || 'Invalid upload' });
+    }
+    throw e;
   }
-);
+});
 
 export { router as feedRouter };

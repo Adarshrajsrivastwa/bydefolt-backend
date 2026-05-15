@@ -8,6 +8,8 @@ const workExperienceSchema = new mongoose.Schema(
     endDate: { type: String, trim: true, default: '' },
     description: { type: String, trim: true, default: '' },
     currentPosition: { type: Boolean, default: false },
+    /** Approved company user id when linked via company search. */
+    companyUserId: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );
@@ -27,7 +29,7 @@ const educationSchema = new mongoose.Schema(
 
 const languageSchema = new mongoose.Schema(
   {
-    name: { type: String, trim: true, required: true },
+    name: { type: String, trim: true, default: '' },
     flagEmoji: { type: String, trim: true, default: '🌐' },
     oralLevel: { type: Number, min: 0, max: 10, default: 5 },
     writtenLevel: { type: Number, min: 0, max: 10, default: 5 },

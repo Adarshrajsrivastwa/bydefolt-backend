@@ -66,6 +66,63 @@ router.get(
   }
 );
 
+/** Job seeker's employer verification requests (all statuses). */
+router.get('/my-employer-requests', requireAuth, async (req, res) => {
+  if (req.user.role !== 'jobSeeker') {
+    return res.status(403).json({ message: 'Only job seekers can view these requests' });
+  }
+
+  const seekerOid = new mongoose.Types.ObjectId(req.user.id);
+  const rows = await CompanyEmployerJoinRequest.find({ seekerId: seekerOid })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean();
+
+  const companyIds = [
+    ...new Set(
+      rows
+        .map((r) => r.companyUserId?.toString?.() || '')
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(id))
+    ),
+  ].map((id) => new mongoose.Types.ObjectId(id));
+
+  const profiles = companyIds.length
+    ? await CompanyProfile.find({ userId: { $in: companyIds } })
+        .select('userId companyDisplayName legalRegisteredName')
+        .lean()
+    : [];
+  const users = companyIds.length
+    ? await User.find({ _id: { $in: companyIds } }).select('name').lean()
+    : [];
+
+  const profileByUser = new Map(profiles.map((p) => [p.userId.toString(), p]));
+  const userNameById = new Map(users.map((u) => [u._id.toString(), u.name]));
+
+  const requests = rows.map((r) => {
+    const cid = r.companyUserId?.toString?.() || '';
+    const prof = profileByUser.get(cid);
+    let companyName = '';
+    if (prof) {
+      companyName =
+        String(prof.companyDisplayName || '').trim() ||
+        String(prof.legalRegisteredName || '').trim();
+    }
+    if (!companyName) companyName = String(userNameById.get(cid) || '').trim();
+
+    return {
+      id: r._id.toString(),
+      status: r.status,
+      jobTitle: String(r.jobTitle || '').trim(),
+      companyUserId: cid,
+      companyName,
+      createdAt: r.createdAt,
+      reviewedAt: r.reviewedAt,
+    };
+  });
+
+  return res.json({ requests });
+});
+
 /** Job seeker asks an approved company to verify their employer (work experience). */
 router.post(
   '/employer-requests',
