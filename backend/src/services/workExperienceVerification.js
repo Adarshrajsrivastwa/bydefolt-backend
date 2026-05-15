@@ -199,3 +199,57 @@ export async function clearStaleEmployerRequestsForSeeker(seekerId, previousWork
   });
   return result.deletedCount ?? 0;
 }
+
+/**
+ * Ensure a pending employer-verification row exists for each work experience
+ * tied to a registered company (so HR queue matches profile "pending" state).
+ */
+export async function syncEmployerJoinRequestsForSeeker(seekerId, workRows) {
+  if (!Array.isArray(workRows) || !workRows.length) return;
+
+  const seekerOid = new mongoose.Types.ObjectId(seekerId);
+
+  for (const w of workRows) {
+    const company = String(w.company || '').trim();
+    if (!company) continue;
+
+    let companyUserId = sanitizeCompanyUserId(w.companyUserId);
+    if (!companyUserId) {
+      companyUserId = await resolveCompanyUserIdForName(company);
+    }
+    if (!companyUserId || !mongoose.Types.ObjectId.isValid(companyUserId)) continue;
+
+    const companyOid = new mongoose.Types.ObjectId(companyUserId);
+    const companyUser = await User.findOne({
+      _id: companyOid,
+      role: 'company',
+      companyStatus: 'approved',
+    }).lean();
+    if (!companyUser) continue;
+
+    const pendingDup = await CompanyEmployerJoinRequest.findOne({
+      seekerId: seekerOid,
+      companyUserId: companyOid,
+      status: 'pending',
+    }).lean();
+    if (pendingDup) continue;
+
+    const approved = await CompanyEmployerJoinRequest.findOne({
+      seekerId: seekerOid,
+      companyUserId: companyOid,
+      status: 'approved',
+    }).lean();
+    if (approved) continue;
+
+    try {
+      await CompanyEmployerJoinRequest.create({
+        seekerId: seekerOid,
+        companyUserId: companyOid,
+        jobTitle: String(w.jobTitle || '').trim(),
+        status: 'pending',
+      });
+    } catch {
+      // duplicate pending — ignore
+    }
+  }
+}

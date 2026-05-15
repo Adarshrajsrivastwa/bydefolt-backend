@@ -317,30 +317,24 @@ async function mapEmployerRequestRow(row, companyName = '') {
   const populated = row.seekerId;
   let seeker = null;
   if (populated && typeof populated === 'object' && populated._id) {
-    let bd = populated.bdId ? String(populated.bdId).trim() : '';
-    if (!bd) {
-      const u = await User.findById(populated._id);
-      if (u) bd = await ensureBdId(u);
-    }
     seeker = {
       id: populated._id.toString(),
       name: populated.name || '',
       email: populated.email || '',
       phone: populated.phone || '',
-      bdId: bd,
+      bdId: populated.bdId ? String(populated.bdId).trim() : '',
     };
   } else {
     const sid = row.seekerId?._id ?? row.seekerId;
     if (sid) {
-      const u = await User.findById(sid);
+      const u = await User.findById(sid).select('name email phone bdId').lean();
       if (u) {
-        const bd = await ensureBdId(u);
         seeker = {
           id: u._id.toString(),
-          name: u.name,
-          email: u.email,
-          phone: u.phone,
-          bdId: bd,
+          name: u.name || '',
+          email: u.email || '',
+          phone: u.phone || '',
+          bdId: u.bdId ? String(u.bdId).trim() : '',
         };
       }
     }

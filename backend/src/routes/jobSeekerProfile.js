@@ -8,6 +8,7 @@ import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import {
   clearStaleEmployerRequestsForSeeker,
   enrichWorkExperiencesWithVerification,
+  syncEmployerJoinRequestsForSeeker,
 } from '../services/workExperienceVerification.js';
 import mongoose from 'mongoose';
 
@@ -268,11 +269,13 @@ router.put('/me', async (req, res) => {
   );
 
   if (Object.prototype.hasOwnProperty.call(b, 'workExperiences')) {
+    const nextWork = payload.workExperiences ?? sanitizeWork(doc.workExperiences);
     await clearStaleEmployerRequestsForSeeker(
       user._id.toString(),
       sanitizeWork(prev?.workExperiences ?? []),
-      payload.workExperiences ?? sanitizeWork(doc.workExperiences)
+      nextWork
     );
+    await syncEmployerJoinRequestsForSeeker(user._id.toString(), nextWork);
   }
 
   return res.json({ profile: await mapProfileForSeeker(doc, user._id.toString()) });
@@ -317,6 +320,7 @@ router.delete('/me/work-experiences/:index', async (req, res) => {
     previous,
     next
   );
+  await syncEmployerJoinRequestsForSeeker(user._id.toString(), next);
 
   return res.json({ profile: await mapProfileForSeeker(updated, user._id.toString()) });
 });
