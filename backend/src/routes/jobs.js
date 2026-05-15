@@ -27,6 +27,7 @@ import { CompanyProfile } from '../models/CompanyProfile.js';
 import { JobSave } from '../models/JobSave.js';
 
 import { JobApplication, applicationStages } from '../models/JobApplication.js';
+import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
 
 
 
@@ -143,6 +144,8 @@ router.get('/meta', (_req, res) => {
       employmentTypes: employmentTypeOptions,
 
     },
+
+    applicationStages,
 
   });
 
@@ -442,7 +445,24 @@ router.get('/mine', requireAuth, async (req, res) => {
 
     .populate({ path: 'createdBy', select: 'name role companyId' });
 
-  return res.json({ jobs: jobs.map((j) => mapJob(j)) });
+  const jobIds = jobs.map((j) => j._id);
+  let countByJob = {};
+  if (jobIds.length > 0) {
+    const countRows = await JobApplication.aggregate([
+      { $match: { jobPostId: { $in: jobIds } } },
+      { $group: { _id: '$jobPostId', applicationCount: { $sum: 1 } } },
+    ]);
+    countByJob = Object.fromEntries(
+      countRows.map((r) => [r._id.toString(), r.applicationCount])
+    );
+  }
+
+  return res.json({
+    jobs: jobs.map((j) => ({
+      ...mapJob(j),
+      applicationCount: countByJob[j._id.toString()] || 0,
+    })),
+  });
 
 });
 
@@ -553,21 +573,91 @@ router.get('/mine/hiring-stats', requireAuth, async (req, res) => {
 
   const row = agg[0] || {};
 
+  let candidatesReviewed = row.candidatesReviewed || 0;
+  let interviewsScheduled = row.interviewsScheduled || 0;
+  let hiredCandidates = row.hiredCandidates || 0;
+
+  /** Company / HR: verification pipeline counts (aligned with roster & verify queue). */
+  let companyUserId = null;
+  if (req.user.role === 'company') {
+    companyUserId = req.user.id;
+  } else if (req.user.role === 'recruiter' && req.user.companyId) {
+    companyUserId = req.user.companyId;
+  }
+  if (companyUserId) {
+    const companyOid = new mongoose.Types.ObjectId(companyUserId);
+    const [approved, pending] = await Promise.all([
+      CompanyEmployerJoinRequest.countDocuments({
+        companyUserId: companyOid,
+        status: 'approved',
+      }),
+      CompanyEmployerJoinRequest.countDocuments({
+        companyUserId: companyOid,
+        status: 'pending',
+      }),
+    ]);
+    candidatesReviewed = approved + pending;
+  }
+
   return res.json({
-
     jobsPosted,
-
-    candidatesReviewed: row.candidatesReviewed || 0,
-
-    interviewsScheduled: row.interviewsScheduled || 0,
-
-    hiredCandidates: row.hiredCandidates || 0,
-
+    candidatesReviewed,
+    interviewsScheduled,
+    hiredCandidates,
   });
 
 });
 
 
+
+/** List applicants for a job post (company / recruiter / owner). */
+router.get(
+  '/:jobId/applications',
+  requireAuth,
+  [param('jobId').custom((value) => mongoose.Types.ObjectId.isValid(value))],
+  async (req, res) => {
+    if (!canManageJobs(req.user.role)) {
+      return res.status(403).json({ message: 'Only recruiter/company/owner can view applications' });
+    }
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const job = await JobPost.findById(req.params.jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+    const allowed = await userOwnsOrCompanyOwnsJob(req.user, job);
+    if (!allowed) {
+      return res.status(403).json({ message: 'You can only view applications for your jobs' });
+    }
+
+    const apps = await JobApplication.find({ jobPostId: job._id })
+      .sort({ createdAt: -1 })
+      .populate({ path: 'userId', select: 'name email phone bdId' })
+      .lean();
+
+    const applications = apps
+      .filter((a) => a.userId && typeof a.userId === 'object' && a.userId._id)
+      .map((a) => {
+        const u = a.userId;
+        return {
+          id: a._id.toString(),
+          userId: u._id.toString(),
+          applicantName: u.name || '',
+          applicantEmail: u.email || '',
+          applicantPhone: u.phone || '',
+          bdId: u.bdId || '',
+          stage: a.stage || 'applied',
+          appliedAt: a.createdAt,
+        };
+      });
+
+    return res.json({
+      job: mapJob(job),
+      applications,
+      stages: applicationStages,
+    });
+  }
+);
 
 router.patch(
 

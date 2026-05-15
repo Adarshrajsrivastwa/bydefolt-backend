@@ -1,7 +1,14 @@
 import mongoose from 'mongoose';
 
-/** Recruiter pipeline stage for analytics (dashboard + future HR UI). */
-export const applicationStages = ['applied', 'reviewed', 'interview', 'hired'];
+/** Recruiter pipeline stages (company can move applicants through these). */
+export const applicationStages = [
+  'applied',
+  'reviewed',
+  'online_test',
+  'interview',
+  'hired',
+  'rejected',
+];
 
 const jobApplicationSchema = new mongoose.Schema(
   {

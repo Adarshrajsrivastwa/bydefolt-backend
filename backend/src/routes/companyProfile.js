@@ -320,6 +320,39 @@ router.post(
   }
 );
 
+/** Demote linked recruiter back to job seeker (removes company HR seat). */
+router.delete(
+  '/recruiters/:recruiterId',
+  [param('recruiterId').isMongoId().withMessage('Invalid recruiter id')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
+    }
+    const company = await assertApprovedCompany(req, res);
+    if (!company) return;
+
+    const target = await User.findOne({
+      _id: req.params.recruiterId,
+      role: 'recruiter',
+      companyId: company._id,
+    });
+    if (!target) {
+      return res.status(404).json({ message: 'HR user not found for your company.' });
+    }
+
+    target.role = 'jobSeeker';
+    target.companyId = null;
+    await target.save();
+
+    const bd = await ensureBdId(target);
+    return res.json({
+      message: 'HR removed. User is now a job seeker.',
+      user: mapRecruiterRow(target, bd),
+    });
+  }
+);
+
 async function getEmployerReviewContext(req) {
   const user = await User.findById(req.user.id);
   if (!user) {
