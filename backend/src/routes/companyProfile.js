@@ -5,6 +5,7 @@ import { CompanyProfile } from '../models/CompanyProfile.js';
 import { User } from '../models/User.js';
 import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
 import { ensureBdId } from '../services/bdId.js';
+import { listCompanyEmployees } from '../services/companyEmployees.js';
 
 const router = Router();
 
@@ -387,6 +388,17 @@ router.get('/employer-requests', requireAuth, async (req, res) => {
     requests.push(await mapEmployerRequestRow(row, companyName));
   }
   return res.json({ requests });
+});
+
+/** Company / HR: roster — name, job title (post), profile photo. */
+router.get('/employees', requireAuth, async (req, res) => {
+  const ctx = await getEmployerReviewContext(req);
+  if (!ctx.ok) {
+    return res.status(ctx.status).json({ message: ctx.message });
+  }
+
+  const employees = await listCompanyEmployees(ctx.companyUserId.toString());
+  return res.json({ employees, count: employees.length });
 });
 
 router.post(
