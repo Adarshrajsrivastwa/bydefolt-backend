@@ -5,7 +5,10 @@ import { CompanyProfile } from '../models/CompanyProfile.js';
 import { User } from '../models/User.js';
 import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
 import { ensureBdId } from '../services/bdId.js';
-import { listCompanyEmployees } from '../services/companyEmployees.js';
+import {
+  ensurePendingJoinRequestsFromRoster,
+  listCompanyEmployees,
+} from '../services/companyEmployees.js';
 
 const router = Router();
 
@@ -358,6 +361,11 @@ router.get('/employer-requests', requireAuth, async (req, res) => {
   }
 
   const st = String(req.query.status || 'all').toLowerCase();
+
+  if (st === 'all' || st === 'pending') {
+    await ensurePendingJoinRequestsFromRoster(ctx.companyUserId.toString());
+  }
+
   const filter = { companyUserId: ctx.companyUserId };
   if (st === 'pending' || st === 'approved' || st === 'rejected') {
     filter.status = st;
@@ -391,6 +399,7 @@ router.get('/employees', requireAuth, async (req, res) => {
     return res.status(ctx.status).json({ message: ctx.message });
   }
 
+  await ensurePendingJoinRequestsFromRoster(ctx.companyUserId.toString());
   const employees = await listCompanyEmployees(ctx.companyUserId.toString());
   return res.json({ employees, count: employees.length });
 });

@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
 import { User } from '../models/User.js';
-import { ensureBdId } from './bdId.js';
 import { resolveCompanyUserIdForName } from './workExperienceVerification.js';
 
 /**
@@ -106,16 +105,11 @@ export async function listCompanyEmployees(companyUserId) {
   for (const [sid, row] of bySeeker) {
     const u = userById.get(sid);
     if (!u) continue;
-    let bd = String(u.bdId || '').trim();
-    if (!bd) {
-      const full = await User.findById(sid);
-      if (full) bd = await ensureBdId(full);
-    }
     out.push({
       seekerId: sid,
       name: String(u.name || '').trim(),
       email: String(u.email || '').trim(),
-      bdId: bd,
+      bdId: String(u.bdId || '').trim(),
       jobTitle: row.jobTitle || '',
       profilePhotoUrl: row.profilePhotoUrl || '',
       verified: Boolean(row.verified),
@@ -130,4 +124,43 @@ export async function listCompanyEmployees(companyUserId) {
   });
 
   return out;
+}
+
+/**
+ * Same roster as [listCompanyEmployees]: anyone not yet verified gets a
+ * pending employer-verification row so the HR queue matches "All employees".
+ */
+export async function ensurePendingJoinRequestsFromRoster(companyUserId) {
+  const employees = await listCompanyEmployees(companyUserId);
+  const companyOid = new mongoose.Types.ObjectId(companyUserId);
+
+  for (const emp of employees) {
+    if (emp.verified) continue;
+
+    const seekerOid = new mongoose.Types.ObjectId(emp.seekerId);
+    const approved = await CompanyEmployerJoinRequest.findOne({
+      seekerId: seekerOid,
+      companyUserId: companyOid,
+      status: 'approved',
+    }).lean();
+    if (approved) continue;
+
+    const pending = await CompanyEmployerJoinRequest.findOne({
+      seekerId: seekerOid,
+      companyUserId: companyOid,
+      status: 'pending',
+    }).lean();
+    if (pending) continue;
+
+    try {
+      await CompanyEmployerJoinRequest.create({
+        seekerId: seekerOid,
+        companyUserId: companyOid,
+        jobTitle: String(emp.jobTitle || '').trim(),
+        status: 'pending',
+      });
+    } catch {
+      // duplicate pending — ignore
+    }
+  }
 }
