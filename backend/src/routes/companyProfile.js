@@ -312,7 +312,7 @@ async function getEmployerReviewContext(req) {
   };
 }
 
-async function mapEmployerRequestRow(row) {
+async function mapEmployerRequestRow(row, companyName = '') {
   const populated = row.seekerId;
   let seeker = null;
   if (populated && typeof populated === 'object' && populated._id) {
@@ -348,6 +348,7 @@ async function mapEmployerRequestRow(row) {
     id: row._id.toString(),
     status: row.status,
     jobTitle: row.jobTitle || '',
+    companyName: String(companyName || '').trim(),
     createdAt: row.createdAt,
     reviewedAt: row.reviewedAt,
     seeker,
@@ -373,9 +374,17 @@ router.get('/employer-requests', requireAuth, async (req, res) => {
     .populate({ path: 'seekerId', select: 'name email phone bdId' })
     .lean();
 
+  const companyProfile = await CompanyProfile.findOne({ userId: ctx.companyUserId })
+    .select('companyDisplayName legalRegisteredName')
+    .lean();
+  const companyName =
+    companyProfile?.companyDisplayName?.trim() ||
+    companyProfile?.legalRegisteredName?.trim() ||
+    '';
+
   const requests = [];
   for (const row of rows) {
-    requests.push(await mapEmployerRequestRow(row));
+    requests.push(await mapEmployerRequestRow(row, companyName));
   }
   return res.json({ requests });
 });
