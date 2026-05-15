@@ -5,7 +5,10 @@ import fs from 'node:fs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
-import { enrichWorkExperiencesWithVerification } from '../services/workExperienceVerification.js';
+import {
+  clearStaleEmployerRequestsForSeeker,
+  enrichWorkExperiencesWithVerification,
+} from '../services/workExperienceVerification.js';
 import mongoose from 'mongoose';
 
 const router = Router();
@@ -240,6 +243,14 @@ router.put('/me', async (req, res) => {
     { $set: { ...payload, userId: user._id } },
     { upsert: true, new: true }
   );
+
+  if (Object.prototype.hasOwnProperty.call(b, 'workExperiences')) {
+    await clearStaleEmployerRequestsForSeeker(
+      user._id.toString(),
+      prev?.workExperiences ?? [],
+      payload.workExperiences
+    );
+  }
 
   return res.json({ profile: await mapProfileForSeeker(doc, user._id.toString()) });
 });

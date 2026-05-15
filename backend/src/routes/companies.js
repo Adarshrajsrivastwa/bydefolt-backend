@@ -124,24 +124,35 @@ router.get('/my-employer-requests', requireAuth, async (req, res) => {
   return res.json({ requests });
 });
 
-/** Remove this seeker's verification rows for one company (e.g. work experience company changed). */
+/** Remove this seeker's verification rows for one company (by id or registered company name). */
 router.delete('/my-employer-requests/for-company/:companyUserId', requireAuth, async (req, res) => {
   if (req.user.role !== 'jobSeeker') {
     return res.status(403).json({ message: 'Only job seekers can clear these requests' });
   }
 
-  const companyUserId = String(req.params.companyUserId || '').trim();
+  const seekerOid = new mongoose.Types.ObjectId(req.user.id);
+  let companyUserId = String(req.params.companyUserId || '').trim();
+  const companyName = String(req.query.companyName || req.body?.companyName || '').trim();
+
   if (!mongoose.Types.ObjectId.isValid(companyUserId)) {
-    return res.status(400).json({ message: 'Invalid company id' });
+    if (!companyName) {
+      return res.status(400).json({ message: 'Invalid company id or provide companyName' });
+    }
+    const resolved = await resolveCompanyUserIdForName(companyName);
+    if (!resolved) {
+      return res.json({ deletedCount: 0 });
+    }
+    companyUserId = resolved;
   }
 
-  const seekerOid = new mongoose.Types.ObjectId(req.user.id);
   const companyOid = new mongoose.Types.ObjectId(companyUserId);
 
-  const result = await CompanyEmployerJoinRequest.deleteMany({
+  const filter = {
     seekerId: seekerOid,
     companyUserId: companyOid,
-  });
+  };
+
+  const result = await CompanyEmployerJoinRequest.deleteMany(filter);
 
   return res.json({
     deletedCount: result.deletedCount ?? 0,

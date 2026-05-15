@@ -168,3 +168,34 @@ export async function enrichWorkExperiencesWithVerification(workExperiences, see
   }
   return out;
 }
+
+async function companyIdsFromWorkRows(rows) {
+  const ids = new Set();
+  if (!Array.isArray(rows)) return ids;
+  for (const w of rows) {
+    let companyUserId = sanitizeCompanyUserId(w.companyUserId);
+    if (!companyUserId) {
+      companyUserId = await resolveCompanyUserIdForName(w.company);
+    }
+    if (companyUserId) ids.add(companyUserId);
+  }
+  return ids;
+}
+
+/**
+ * When work experience rows are removed or the company changes, drop employer
+ * verification requests for companies no longer on the profile.
+ */
+export async function clearStaleEmployerRequestsForSeeker(seekerId, previousWork, newWork) {
+  const prevIds = await companyIdsFromWorkRows(previousWork);
+  const newIds = await companyIdsFromWorkRows(newWork);
+  const removed = [...prevIds].filter((id) => !newIds.has(id));
+  if (!removed.length) return 0;
+
+  const seekerOid = new mongoose.Types.ObjectId(seekerId);
+  const result = await CompanyEmployerJoinRequest.deleteMany({
+    seekerId: seekerOid,
+    companyUserId: { $in: removed.map((id) => new mongoose.Types.ObjectId(id)) },
+  });
+  return result.deletedCount ?? 0;
+}
