@@ -12,8 +12,15 @@ import { sendOtpEmail, sendWelcomeAfterSignupEmail } from '../services/mail.js';
 import { ensureBdId, generateUniqueBdId } from '../services/bdId.js';
 import { CONNECTION_FIELDS, effectiveConnectionField, inferConnectionField } from '../util/connectionField.js';
 import { OWNER_LOGIN_REQUIRES_OTP } from '../constants/platformAdminLogin.js';
+import {
+  EMAIL_NORM_OPTS,
+  findUserByAuthEmail,
+  normalizeAuthEmail,
+} from '../util/normalizeAuthEmail.js';
 
 const router = Router();
+const emailField = () =>
+  body('email').isEmail().normalizeEmail(EMAIL_NORM_OPTS).withMessage('Valid email is required');
 
 function companyAccountBlockedMessage(status) {
   if (status === 'suspended') return 'Company account has been suspended. Contact platform support.';
@@ -81,6 +88,7 @@ async function saveOtpAndMail(user, purpose) {
     // eslint-disable-next-line no-console
     console.error('[auth] OTP email send failed (code still valid in DB / server log):', err?.message || err);
   }
+  return code;
 }
 
 router.post(
@@ -113,10 +121,10 @@ router.post(
         }
         return true;
       }),
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    emailField(),
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
     body('phone').trim().matches(/^\d{10}$/).withMessage('Phone number must be 10 digits'),
-    body('companyEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(),
+    body('companyEmail').optional({ values: 'falsy' }).isEmail().normalizeEmail(EMAIL_NORM_OPTS),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -125,7 +133,8 @@ router.post(
     const { name, email, password, phone } = req.body;
     const role = req.body.role === 'company' ? 'company' : req.body.role === 'recruiter' ? 'recruiter' : 'jobSeeker';
 
-    const existing = await User.findOne({ email: email.toLowerCase() });
+    const emailNorm = normalizeAuthEmail(email);
+    const existing = await User.findOne({ email: emailNorm });
     if (existing) {
       return res.status(409).json({ message: 'An account with this email already exists' });
     }
@@ -194,7 +203,7 @@ router.post(
   upload.single('verificationPdf'),
   [
     body('name').trim().notEmpty().withMessage('Name is required').isLength({ max: 60 }),
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    emailField(),
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
     body('phone').trim().matches(/^\d{10}$/).withMessage('Phone number must be 10 digits'),
     body('companyDisplayName').trim().notEmpty().withMessage('Company display name is required').isLength({ max: 120 }),
@@ -209,7 +218,8 @@ router.post(
     if (!errors.isEmpty()) return sendValidationError(res, errors);
 
     const { name, email, password, phone } = req.body;
-    const existing = await User.findOne({ email: email.toLowerCase() });
+    const emailNorm = normalizeAuthEmail(email);
+    const existing = await User.findOne({ email: emailNorm });
     if (existing) return res.status(409).json({ message: 'An account with this email already exists' });
     const existingPhone = await User.findOne({ phone });
     if (existingPhone) return res.status(409).json({ message: 'An account with this phone number already exists' });
@@ -272,18 +282,19 @@ router.post(
 
 router.post(
   '/login',
-  [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
-    body('password').notEmpty().withMessage('Password is required'),
-  ],
+  [emailField(), body('password').notEmpty().withMessage('Password is required')],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendValidationError(res, errors);
 
-    const { email, password } = req.body;
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    const { password } = req.body;
+    const emailNorm = normalizeAuthEmail(req.body.email);
+    const user = await findUserByAuthEmail(User, emailNorm, '+password');
     if (!user) {
-      return res.status(401).json({ message: 'Invalid email or password' });
+      return res.status(401).json({
+        message:
+          'No account found for this email. Register first, or use Forgot password if you already signed up.',
+      });
     }
     const ok = await user.comparePassword(password);
     if (!ok) {
@@ -317,24 +328,29 @@ router.post(
       });
     }
 
-    await saveOtpAndMail(user, 'login');
-    return res.json({
+    const otpCode = await saveOtpAndMail(user, 'login');
+    const payload = {
       needsOtp: true,
       otpPurpose: 'login',
       user: publicUserPayload(user, bdId),
       accessToken: '',
-    });
+      message: 'Enter the 4-digit code sent to your email to finish signing in.',
+    };
+    if (process.env.NODE_ENV === 'development' && process.env.AUTH_DEV_EXPOSE_OTP === 'true') {
+      payload.devOtp = otpCode;
+    }
+    return res.json(payload);
   }
 );
 
 router.post(
   '/forgot-password',
-  [body('email').isEmail().normalizeEmail().withMessage('Valid email is required')],
+  [emailField()],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendValidationError(res, errors);
 
-    const email = String(req.body.email).toLowerCase();
+    const email = normalizeAuthEmail(req.body.email);
     const user = await User.findOne({ email });
     if (user) {
       await saveOtpAndMail(user, 'passwordReset');
@@ -349,7 +365,7 @@ router.post(
 router.post(
   '/reset-password',
   [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    emailField(),
     body('otp').matches(/^\d{4}$/).withMessage('OTP must be 4 digits'),
     body('newPassword').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
   ],
@@ -357,7 +373,7 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendValidationError(res, errors);
 
-    const email = String(req.body.email).toLowerCase();
+    const email = normalizeAuthEmail(req.body.email);
     const otp = String(req.body.otp);
     const { newPassword } = req.body;
 
@@ -388,7 +404,7 @@ router.post(
 router.post(
   '/verify-otp',
   [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    emailField(),
     body('otp').matches(/^\d{4}$/).withMessage('OTP must be 4 digits'),
     body('purpose').isIn(['signup', 'login']).withMessage('Invalid purpose'),
   ],
@@ -396,10 +412,10 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendValidationError(res, errors);
 
-    const email = String(req.body.email).toLowerCase();
+    const email = normalizeAuthEmail(req.body.email);
     const { otp, purpose } = req.body;
 
-    const user = await User.findOne({ email }).select('+emailOtpHash');
+    const user = await findUserByAuthEmail(User, email, '+emailOtpHash');
     if (!user) {
       return res.status(404).json({ message: 'User not found' });
     }
@@ -466,7 +482,7 @@ router.post(
 router.post(
   '/resend-otp',
   [
-    body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+    emailField(),
     body('password').notEmpty().withMessage('Password is required'),
     body('purpose').isIn(['signup', 'login']).withMessage('Invalid purpose'),
   ],
@@ -474,10 +490,10 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendValidationError(res, errors);
 
-    const email = String(req.body.email).toLowerCase();
+    const email = normalizeAuthEmail(req.body.email);
     const { password, purpose } = req.body;
 
-    const user = await User.findOne({ email }).select('+password');
+    const user = await findUserByAuthEmail(User, email, '+password');
     if (!user) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
