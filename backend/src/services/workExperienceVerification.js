@@ -7,38 +7,102 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Trim, collapse spaces, lowercase — matching is never case-sensitive. */
+export function normalizeCompanyName(name) {
+  return String(name || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function companyKeysMatch(a, b) {
+  const x = normalizeCompanyName(a);
+  const y = normalizeCompanyName(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return x.includes(y) || y.includes(x);
+}
+
 const STATUS_RANK = { approved: 3, pending: 2, rejected: 1 };
 
+function approvedCompanyFromProfile(profile) {
+  const u = profile?.userId;
+  if (!u || typeof u !== 'object' || !u._id) return null;
+  if (u.role !== 'company' || u.companyStatus !== 'approved') return null;
+  return u._id.toString();
+}
+
 /**
- * Match an approved company account by display / legal / account name (exact, case-insensitive).
+ * Match an approved company by display / legal / account name (case-insensitive, spacing-insensitive).
  */
 export async function resolveCompanyUserIdForName(companyName) {
   const c = String(companyName || '').trim();
   if (!c) return '';
 
-  const rx = new RegExp(`^${escapeRegex(c)}$`, 'i');
+  const key = normalizeCompanyName(c);
+  const rxExact = new RegExp(`^${escapeRegex(c)}$`, 'i');
 
   const nameHitUsers = await User.find({
     role: 'company',
     companyStatus: 'approved',
-    name: rx,
+    name: rxExact,
   })
-    .select('_id')
+    .select('_id name')
     .limit(8)
     .lean();
-  const nameHitIds = nameHitUsers.map((u) => u._id);
 
-  const profileOr = [{ companyDisplayName: rx }, { legalRegisteredName: rx }];
+  for (const u of nameHitUsers) {
+    if (companyKeysMatch(u.name, c)) return u._id.toString();
+  }
+
+  const nameHitIds = nameHitUsers.map((u) => u._id);
+  const profileOr = [{ companyDisplayName: rxExact }, { legalRegisteredName: rxExact }];
   if (nameHitIds.length) profileOr.push({ userId: { $in: nameHitIds } });
 
-  const profile = await CompanyProfile.findOne({ $or: profileOr })
-    .populate({ path: 'userId', select: 'role companyStatus' })
+  let profile = await CompanyProfile.findOne({ $or: profileOr })
+    .populate({ path: 'userId', select: 'role companyStatus name' })
     .lean();
 
-  const u = profile?.userId;
-  if (!u || typeof u !== 'object' || !u._id) return '';
-  if (u.role !== 'company' || u.companyStatus !== 'approved') return '';
-  return u._id.toString();
+  let id = profile ? approvedCompanyFromProfile(profile) : null;
+  if (id) return id;
+
+  const rxLoose = new RegExp(escapeRegex(c), 'i');
+  const candidates = await CompanyProfile.find({
+    $or: [{ companyDisplayName: rxLoose }, { legalRegisteredName: rxLoose }],
+  })
+    .populate({ path: 'userId', select: 'role companyStatus name' })
+    .limit(25)
+    .lean();
+
+  for (const p of candidates) {
+    const u = p.userId;
+    const display = p.companyDisplayName || '';
+    const legal = p.legalRegisteredName || '';
+    const account = typeof u === 'object' && u ? u.name || '' : '';
+    if (
+      companyKeysMatch(display, c) ||
+      companyKeysMatch(legal, c) ||
+      companyKeysMatch(account, c)
+    ) {
+      id = approvedCompanyFromProfile(p);
+      if (id) return id;
+    }
+  }
+
+  const looseUsers = await User.find({
+    role: 'company',
+    companyStatus: 'approved',
+    name: rxLoose,
+  })
+    .select('_id name')
+    .limit(15)
+    .lean();
+
+  for (const u of looseUsers) {
+    if (companyKeysMatch(u.name, c)) return u._id.toString();
+  }
+
+  return '';
 }
 
 function sanitizeCompanyUserId(raw) {

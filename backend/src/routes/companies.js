@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
 import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
+import { resolveCompanyUserIdForName } from '../services/workExperienceVerification.js';
 
 const router = Router();
 
@@ -128,7 +129,8 @@ router.post(
   '/employer-requests',
   requireAuth,
   [
-    body('companyUserId').isMongoId().withMessage('Valid company id is required'),
+    body('companyUserId').optional().isMongoId().withMessage('Invalid company id'),
+    body('companyName').optional().isString().trim().isLength({ min: 1, max: 200 }),
     body('jobTitle').optional().isString().trim().isLength({ max: 200 }),
   ],
   async (req, res) => {
@@ -140,7 +142,24 @@ router.post(
     }
 
     const seekerOid = new mongoose.Types.ObjectId(req.user.id);
-    const companyOid = new mongoose.Types.ObjectId(req.body.companyUserId);
+    const rawId = String(req.body.companyUserId || '').trim();
+    const rawName = String(req.body.companyName || '').trim();
+
+    let companyOid = null;
+    if (rawId && mongoose.Types.ObjectId.isValid(rawId)) {
+      companyOid = new mongoose.Types.ObjectId(rawId);
+    } else if (rawName) {
+      const resolved = await resolveCompanyUserIdForName(rawName);
+      if (!resolved) {
+        return res.status(404).json({
+          message:
+            'Company not registered on ByDefolt. HR must register the company, or match the exact registered name.',
+        });
+      }
+      companyOid = new mongoose.Types.ObjectId(resolved);
+    } else {
+      return res.status(400).json({ message: 'Company id or company name is required' });
+    }
 
     const companyUser = await User.findOne({
       _id: companyOid,
