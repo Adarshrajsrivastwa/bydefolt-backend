@@ -50,6 +50,7 @@ router.get('/my', async (req, res) => {
 
   const notifications = rows.map((r) => {
     const cid = r.companyUserId?.toString?.() || '';
+    const isPlatform = Boolean(r.isPlatformBroadcast);
     return {
       id: r._id.toString(),
       title: r.title || '',
@@ -57,7 +58,8 @@ router.get('/my', async (req, res) => {
       imageUrl: r.imageUrl || '',
       audience: r.audience || 'all',
       companyUserId: cid,
-      companyName: nameByCompany.get(cid) || '',
+      companyName: isPlatform ? 'ByDefolt' : nameByCompany.get(cid) || '',
+      isPlatformBroadcast: isPlatform,
       readAt: r.readAt,
       createdAt: r.createdAt,
     };

@@ -29,6 +29,8 @@ const userNotificationSchema = new mongoose.Schema(
     title: { type: String, trim: true, required: true, maxlength: 200 },
     body: { type: String, trim: true, required: true, maxlength: 4000 },
     imageUrl: { type: String, trim: true, default: '' },
+    /** Owner / platform broadcast (inbox shows as ByDefolt). */
+    isPlatformBroadcast: { type: Boolean, default: false, index: true },
     readAt: { type: Date, default: null },
   },
   { timestamps: true }

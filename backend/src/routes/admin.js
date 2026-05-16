@@ -1,21 +1,59 @@
 import { Router } from 'express';
-import { body, param, validationResult } from 'express-validator';
+import { body, param, query, validationResult } from 'express-validator';
 import mongoose from 'mongoose';
 import fs from 'node:fs';
 import path from 'node:path';
 import { requireAuth } from '../middleware/auth.js';
-import { User } from '../models/User.js';
+import { User, accountStatuses } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
 import { sendCompanyApprovedEmail, sendCompanyRejectedEmail } from '../services/mail.js';
 import { ensureBdId } from '../services/bdId.js';
-import { accountStatuses } from '../models/User.js';
+import { deleteJobSeekerUserCascade } from '../services/deleteJobSeekerUserCascade.js';
+import { JobPost } from '../models/JobPost.js';
+import { JobApplication } from '../models/JobApplication.js';
+import multer from 'multer';
+import { UserNotification } from '../models/UserNotification.js';
+import {
+  ownerBroadcastScopes,
+  resolveOwnerBroadcastRecipients,
+} from '../services/platformOwnerBroadcast.js';
+import { deleteJobPostCascade } from '../services/deleteJobPostCascade.js';
+
+const noticeUploadDir = path.join(process.cwd(), 'uploads', 'notices');
+fs.mkdirSync(noticeUploadDir, { recursive: true });
+
+function isAllowedNoticeImage(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  const name = String(file.originalname || '').toLowerCase();
+  if (/^image\/(jpeg|jpg|pjpeg|png|x-png|webp|gif)$/i.test(mime)) return true;
+  if (mime === 'application/octet-stream' && /\.(jpe?g|png|webp|gif)$/i.test(name)) {
+    return true;
+  }
+  return false;
+}
+
+const noticeUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, noticeUploadDir),
+    filename: (_req, file, cb) => {
+      const safe = String(file.originalname || 'img').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    cb(
+      isAllowedNoticeImage(file) ? null : new Error('Only JPEG, PNG, WebP, or GIF images are allowed'),
+      isAllowedNoticeImage(file)
+    );
+  },
+});
 
 const router = Router();
 
 function sendValidationError(res, errors) {
   return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
 }
-
 function requireOwner(req, res, next) {
   if (req.user.role !== 'owner') {
     return res.status(403).json({ message: 'Only owner can access this resource' });
@@ -370,6 +408,311 @@ router.post(
       profile = await CompanyProfile.findOne({ userId: user.companyId });
     }
     return res.json({ recruiter: mapRecruiterRow(user, companyUser, profile) });
+  }
+);
+
+/** Demote HR seat to job seeker; clears company link (same as company "remove HR"). */
+router.delete(
+  '/recruiters/:recruiterId',
+  [param('recruiterId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const user = await User.findOne({ _id: req.params.recruiterId, role: 'recruiter' });
+    if (!user) return res.status(404).json({ message: 'HR user not found' });
+
+    user.role = 'jobSeeker';
+    user.companyId = null;
+    user.accountStatus = 'active';
+    await user.save();
+    await ensureBdId(user);
+
+    return res.json({
+      message: 'HR seat removed. User is now a job seeker.',
+      removed: true,
+    });
+  }
+);
+
+function mapJobSeekerRow(user) {
+  return {
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    bdId: user.bdId,
+    headline: String(user.headline || '').trim(),
+    connectionField: String(user.connectionField || '').trim(),
+    accountStatus: user.accountStatus || 'active',
+    createdAt: user.createdAt,
+  };
+}
+
+/** All job seekers (“professionals”). */
+router.get('/job-seekers', async (_req, res) => {
+  const users = await User.find({ role: 'jobSeeker' }).sort({ createdAt: -1 }).limit(500);
+  const rows = [];
+  for (const doc of users) {
+    const bd = await ensureBdId(doc);
+    if (bd) doc.bdId = bd;
+    rows.push(mapJobSeekerRow(doc));
+  }
+  return res.json({ jobSeekers: rows });
+});
+
+router.post(
+  '/job-seekers/:userId/suspend',
+  [param('userId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const user = await User.findOne({ _id: req.params.userId, role: 'jobSeeker' });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    user.accountStatus = 'suspended';
+    await user.save();
+    await ensureBdId(user);
+    return res.json({ jobSeeker: mapJobSeekerRow(user) });
+  }
+);
+
+router.post(
+  '/job-seekers/:userId/activate',
+  [param('userId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const user = await User.findOne({ _id: req.params.userId, role: 'jobSeeker' });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    user.accountStatus = 'active';
+    await user.save();
+    await ensureBdId(user);
+    return res.json({ jobSeeker: mapJobSeekerRow(user) });
+  }
+);
+
+/** Hard delete account + linked data from DB (owner tool). Irreversible. */
+router.delete(
+  '/job-seekers/:userId',
+  [param('userId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const user = await User.findOne({ _id: req.params.userId, role: 'jobSeeker' });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const ok = await deleteJobSeekerUserCascade(user._id);
+    if (!ok) {
+      return res.status(500).json({ message: 'Could not delete user.' });
+    }
+    return res.json({ ok: true, message: 'User and related data deleted.' });
+  }
+);
+
+function mapJobPostAdminRow(j, applicationCount = 0) {
+  const o = j && typeof j.toObject === 'function' ? j.toObject() : j;
+  const cb = o.createdBy;
+  const createdByName =
+    cb && typeof cb === 'object' && cb.name != null ? String(cb.name) : '';
+  return {
+    id: o._id.toString(),
+    title: o.title,
+    description: o.description ?? '',
+    jobPosition: o.jobPosition,
+    location: o.location,
+    workplace: o.workplace,
+    employmentType: o.employmentType,
+    status: o.status,
+    companyName: o.companyName ?? '',
+    createdByName,
+    createdAt: o.createdAt,
+    updatedAt: o.updatedAt,
+    applicationCount,
+  };
+}
+
+/** All job posts (owner moderation). */
+router.get('/jobs', async (_req, res) => {
+  const jobs = await JobPost.find({})
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .populate({ path: 'createdBy', select: 'name role companyId' })
+    .lean();
+
+  const jobIds = jobs.map((j) => j._id);
+  let countByJob = {};
+  if (jobIds.length > 0) {
+    const countRows = await JobApplication.aggregate([
+      { $match: { jobPostId: { $in: jobIds } } },
+      { $group: { _id: '$jobPostId', applicationCount: { $sum: 1 } } },
+    ]);
+    countByJob = Object.fromEntries(
+      countRows.map((r) => [r._id.toString(), r.applicationCount])
+    );
+  }
+
+  return res.json({
+    jobs: jobs.map((j) =>
+      mapJobPostAdminRow(j, countByJob[j._id.toString()] || 0)
+    ),
+  });
+});
+
+router.post(
+  '/jobs/:jobId/suspend',
+  [param('jobId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const job = await JobPost.findById(req.params.jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    job.status = 'suspended';
+    await job.save();
+    const populated = await JobPost.findById(job._id).populate({
+      path: 'createdBy',
+      select: 'name role companyId',
+    });
+    const n = await JobApplication.countDocuments({ jobPostId: job._id });
+    return res.json({ job: mapJobPostAdminRow(populated ?? job, n) });
+  }
+);
+
+router.post(
+  '/jobs/:jobId/publish',
+  [param('jobId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const job = await JobPost.findById(req.params.jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+    job.status = 'published';
+    await job.save();
+    const populated = await JobPost.findById(job._id).populate({
+      path: 'createdBy',
+      select: 'name role companyId',
+    });
+    const n = await JobApplication.countDocuments({ jobPostId: job._id });
+    return res.json({ job: mapJobPostAdminRow(populated ?? job, n) });
+  }
+);
+
+router.delete(
+  '/jobs/:jobId',
+  [param('jobId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const job = await JobPost.findById(req.params.jobId);
+    if (!job) return res.status(404).json({ message: 'Job not found' });
+
+    const ok = await deleteJobPostCascade(job._id);
+    if (!ok) {
+      return res.status(500).json({ message: 'Could not delete job.' });
+    }
+    return res.json({ ok: true, message: 'Job and related applications/saves deleted.' });
+  }
+);
+
+router.get(
+  '/broadcast/recipient-count',
+  [
+    query('scope').isIn(ownerBroadcastScopes).withMessage('Invalid scope'),
+    query('companyUserId').optional().isString().trim(),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const scope = String(req.query.scope || '').toLowerCase();
+    const companyUserId = String(req.query.companyUserId || '').trim();
+    if (scope.startsWith('company_')) {
+      if (!mongoose.Types.ObjectId.isValid(companyUserId)) {
+        return res.status(400).json({ message: 'companyUserId is required for this scope' });
+      }
+    }
+
+    const recipientIds = await resolveOwnerBroadcastRecipients(scope, companyUserId);
+    return res.json({ count: recipientIds.length, scope });
+  }
+);
+
+router.post(
+  '/broadcast',
+  (req, res, next) => {
+    noticeUpload.single('image')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ message: err.message || 'Invalid upload' });
+      }
+      next();
+    });
+  },
+  [
+    body('title').isString().trim().isLength({ min: 1, max: 200 }),
+    body('body').isString().trim().isLength({ min: 1, max: 4000 }),
+    body('scope').isIn(ownerBroadcastScopes).withMessage('Invalid scope'),
+    body('companyUserId').optional().isString().trim(),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const scope = String(req.body.scope || '').toLowerCase();
+    const companyUserId = String(req.body.companyUserId || '').trim();
+    if (scope.startsWith('company_')) {
+      if (!mongoose.Types.ObjectId.isValid(companyUserId)) {
+        return res.status(400).json({ message: 'companyUserId is required for this scope' });
+      }
+    }
+
+    const recipientIds = await resolveOwnerBroadcastRecipients(scope, companyUserId);
+    if (!recipientIds.length) {
+      return res.status(400).json({
+        message:
+          'No recipients for this selection. Check company approval / linked HR & employees.',
+      });
+    }
+
+    const maxRecipients = 10000;
+    if (recipientIds.length > maxRecipients) {
+      return res.status(400).json({
+        message: `Too many recipients (${recipientIds.length}). Maximum is ${maxRecipients}. Narrow the audience.`,
+      });
+    }
+
+    let imageUrl = '';
+    if (req.file?.filename) {
+      imageUrl = `/uploads/notices/${req.file.filename}`;
+    }
+
+    const title = String(req.body.title).trim();
+    const bodyText = String(req.body.body).trim();
+    const ownerOid = new mongoose.Types.ObjectId(req.user.id);
+
+    const docs = recipientIds.map((rid) => ({
+      recipientId: new mongoose.Types.ObjectId(rid),
+      companyUserId: ownerOid,
+      sentBy: ownerOid,
+      audience: 'all',
+      title,
+      body: bodyText,
+      imageUrl,
+      isPlatformBroadcast: true,
+    }));
+
+    const chunk = 500;
+    for (let i = 0; i < docs.length; i += chunk) {
+      await UserNotification.insertMany(docs.slice(i, i + chunk), { ordered: false });
+    }
+
+    return res.status(201).json({
+      sentCount: recipientIds.length,
+      scope,
+      title,
+    });
   }
 );
 

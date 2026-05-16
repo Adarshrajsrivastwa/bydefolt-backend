@@ -46,7 +46,7 @@ const jobPostSchema = new mongoose.Schema(
     location: { type: String, required: true, trim: true, maxlength: 180 },
     workplace: { type: String, enum: workplaceOptions, default: 'Hybrid' },
     employmentType: { type: String, enum: employmentTypeOptions, default: 'Full-time' },
-    status: { type: String, enum: ['published', 'closed'], default: 'published' },
+    status: { type: String, enum: ['published', 'closed', 'suspended'], default: 'published' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     companyName: { type: String, trim: true, default: '' },
   },
