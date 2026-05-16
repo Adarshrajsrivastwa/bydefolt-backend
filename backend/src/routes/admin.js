@@ -98,6 +98,51 @@ function mapCompanyRow(user, profile) {
 
 router.use(requireAuth, requireOwner);
 
+/** Company accounts awaiting review: explicit pending, or legacy docs missing companyStatus. */
+const pendingCompanyQuery = {
+  role: 'company',
+  $or: [
+    { companyStatus: 'pending' },
+    { companyStatus: { $exists: false } },
+    { companyStatus: null },
+  ],
+};
+
+/** Aggregated counts for owner dashboard “Platform overview” (MongoDB). */
+router.get('/platform-overview', async (_req, res) => {
+  const [
+    registeredOrgs,
+    companiesApproved,
+    companiesPendingReview,
+    companiesSuspended,
+    hrSeats,
+    professionalProfiles,
+    jobListings,
+    jobApplications,
+  ] = await Promise.all([
+    User.countDocuments({ role: 'company' }),
+    User.countDocuments({ role: 'company', companyStatus: 'approved' }),
+    User.countDocuments(pendingCompanyQuery),
+    User.countDocuments({ role: 'company', companyStatus: 'suspended' }),
+    User.countDocuments({ role: 'recruiter' }),
+    User.countDocuments({ role: 'jobSeeker' }),
+    JobPost.countDocuments({}),
+    JobApplication.countDocuments({}),
+  ]);
+  return res.json({
+    registeredOrgs,
+    companiesApproved,
+    companiesPendingReview,
+    companiesSuspended,
+    hrSeats,
+    professionalProfiles,
+    jobListings,
+    jobApplications,
+    /** Owner-action queue: companies awaiting approval (same filter as GET /companies/pending). */
+    moderationQueue: companiesPendingReview,
+  });
+});
+
 router.get('/companies/approved', async (_req, res) => {
   const companies = await User.find({ role: 'company', companyStatus: 'approved' }).sort({ createdAt: -1 }).limit(500);
   const ids = companies.map((c) => c._id);
@@ -113,16 +158,6 @@ router.get('/companies/suspended', async (_req, res) => {
   const byId = new Map(profiles.map((p) => [p.userId.toString(), p]));
   return res.json({ companies: companies.map((c) => mapCompanyRow(c, byId.get(c._id.toString()))) });
 });
-
-/** Company accounts awaiting review: explicit pending, or legacy docs missing companyStatus. */
-const pendingCompanyQuery = {
-  role: 'company',
-  $or: [
-    { companyStatus: 'pending' },
-    { companyStatus: { $exists: false } },
-    { companyStatus: null },
-  ],
-};
 
 router.get('/companies/pending', async (_req, res) => {
   const companies = await User.find(pendingCompanyQuery).sort({ createdAt: -1 }).limit(500);
