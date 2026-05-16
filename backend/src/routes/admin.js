@@ -7,7 +7,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { User, accountStatuses } from '../models/User.js';
 import { CompanyProfile } from '../models/CompanyProfile.js';
 import { sendCompanyApprovedEmail, sendCompanyRejectedEmail } from '../services/mail.js';
-import { ensureBdId } from '../services/bdId.js';
+import { ensureBdId, generateUniqueBdId } from '../services/bdId.js';
 import { deleteJobSeekerUserCascade } from '../services/deleteJobSeekerUserCascade.js';
 import { JobPost } from '../models/JobPost.js';
 import { JobApplication } from '../models/JobApplication.js';
@@ -96,6 +96,19 @@ function mapCompanyRow(user, profile) {
   };
 }
 
+function mapPlatformAdminRow(doc) {
+  const o = doc && typeof doc.toObject === 'function' ? doc.toObject() : doc;
+  return {
+    id: o._id.toString(),
+    name: o.name,
+    email: o.email,
+    phone: o.phone,
+    bdId: o.bdId || '',
+    accountStatus: o.accountStatus || 'active',
+    createdAt: o.createdAt,
+  };
+}
+
 router.use(requireAuth, requireOwner);
 
 /** Company accounts awaiting review: explicit pending, or legacy docs missing companyStatus. */
@@ -142,6 +155,130 @@ router.get('/platform-overview', async (_req, res) => {
     moderationQueue: companiesPendingReview,
   });
 });
+
+router.get('/platform-admins', async (_req, res) => {
+  const admins = await User.find({ role: 'owner' })
+    .select('name email phone bdId accountStatus createdAt')
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+  return res.json({
+    admins: admins.map((a) => ({
+      id: a._id.toString(),
+      name: a.name,
+      email: a.email,
+      phone: a.phone,
+      bdId: a.bdId || '',
+      accountStatus: a.accountStatus || 'active',
+      createdAt: a.createdAt,
+    })),
+  });
+});
+
+router.post(
+  '/platform-admins',
+  [
+    body('name').trim().notEmpty().isLength({ max: 120 }),
+    body('email').isEmail().normalizeEmail(),
+    body('phone').trim().matches(/^\d{10}$/).withMessage('Phone must be 10 digits'),
+    body('password').isString().isLength({ min: 6, max: 128 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const email = String(req.body.email || '').toLowerCase().trim();
+    const phone = String(req.body.phone || '').trim();
+    if (await User.exists({ email })) {
+      return res.status(409).json({ message: 'Email already registered' });
+    }
+    if (await User.exists({ phone })) {
+      return res.status(409).json({ message: 'Phone already registered' });
+    }
+    const bdId = await generateUniqueBdId(req.body.name, phone);
+    const doc = await User.create({
+      name: String(req.body.name).trim(),
+      email,
+      phone,
+      password: req.body.password,
+      role: 'owner',
+      companyStatus: 'approved',
+      accountStatus: 'active',
+      bdId,
+    });
+    return res.status(201).json({ admin: mapPlatformAdminRow(doc) });
+  }
+);
+
+router.patch(
+  '/platform-admins/:adminId',
+  [
+    param('adminId').custom((v) => mongoose.Types.ObjectId.isValid(v)),
+    body('name').optional().trim().notEmpty().isLength({ max: 120 }),
+    body('phone').optional().trim().matches(/^\d{10}$/),
+    body('accountStatus').optional().isIn(accountStatuses),
+    body('password').optional().isString().isLength({ min: 6, max: 128 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const user = await User.findOne({ _id: req.params.adminId, role: 'owner' });
+    if (!user) return res.status(404).json({ message: 'Admin not found' });
+    if (Object.hasOwn(req.body, 'phone')) {
+      const nextPhone = String(req.body.phone).trim();
+      const taken = await User.findOne({
+        phone: nextPhone,
+        _id: { $ne: user._id },
+      });
+      if (taken) return res.status(409).json({ message: 'Phone already in use' });
+      user.phone = nextPhone;
+    }
+    if (Object.hasOwn(req.body, 'name')) user.name = String(req.body.name).trim();
+    if (Object.hasOwn(req.body, 'accountStatus')) {
+      const nextStatus = req.body.accountStatus;
+      if (nextStatus !== 'active' && user.accountStatus === 'active') {
+        const activeOwners = await User.countDocuments({
+          role: 'owner',
+          accountStatus: 'active',
+        });
+        if (activeOwners <= 1) {
+          return res.status(400).json({
+            message: 'Cannot change status of the last active platform admin.',
+          });
+        }
+      }
+      user.accountStatus = nextStatus;
+    }
+    if (
+      Object.hasOwn(req.body, 'password') &&
+      typeof req.body.password === 'string' &&
+      req.body.password.length >= 6
+    ) {
+      user.password = req.body.password;
+    }
+    await user.save();
+    return res.json({ admin: mapPlatformAdminRow(user) });
+  }
+);
+
+router.delete(
+  '/platform-admins/:adminId',
+  [param('adminId').custom((v) => mongoose.Types.ObjectId.isValid(v))],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    if (req.user.id === req.params.adminId) {
+      return res.status(400).json({ message: 'You cannot delete your own account.' });
+    }
+    const ownerCount = await User.countDocuments({ role: 'owner' });
+    if (ownerCount <= 1) {
+      return res.status(400).json({ message: 'Cannot delete the only platform admin.' });
+    }
+    const user = await User.findOne({ _id: req.params.adminId, role: 'owner' });
+    if (!user) return res.status(404).json({ message: 'Admin not found' });
+    await User.deleteOne({ _id: user._id });
+    return res.json({ ok: true });
+  }
+);
 
 router.get('/companies/approved', async (_req, res) => {
   const companies = await User.find({ role: 'company', companyStatus: 'approved' }).sort({ createdAt: -1 }).limit(500);

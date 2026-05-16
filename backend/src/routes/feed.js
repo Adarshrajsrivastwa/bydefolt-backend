@@ -17,7 +17,7 @@ import { User } from '../models/User.js';
 import { NetworkFeedPost } from '../models/NetworkFeedPost.js';
 
 import { effectiveConnectionField } from '../util/connectionField.js';
-
+import { MEMBER_NETWORK_ROLES } from '../util/memberNetwork.js';
 import { ensureBdId } from '../services/bdId.js';
 
 
@@ -116,16 +116,11 @@ function sendValidationError(res, errors) {
 
 
 
-function requireJobSeeker(req, res, next) {
-
-  if (req.user.role !== 'jobSeeker') {
-
-    return res.status(403).json({ message: 'Feed posts are available for job seekers only' });
-
+function requireFeedAccess(req, res, next) {
+  if (!MEMBER_NETWORK_ROLES.has(req.user.role)) {
+    return res.status(403).json({ message: 'Feed is not available for this account' });
   }
-
   return next();
-
 }
 
 
@@ -210,7 +205,7 @@ function unlinkFeedImage(urlPath) {
 
 
 
-router.use(requireAuth, requireJobSeeker);
+router.use(requireAuth, requireFeedAccess);
 
 
 
@@ -248,7 +243,12 @@ router.get('/', async (req, res) => {
 
 
 
-  const filtered = raw.filter((d) => d.author && d.author.role === 'jobSeeker');
+  const meId = String(me._id);
+  const filtered = raw.filter((d) => {
+    if (!d.author || !d.author._id) return false;
+    if (String(d.author._id) === meId) return true;
+    return d.author.role === 'jobSeeker';
+  });
 
   shuffleInPlace(filtered);
 

@@ -10,6 +10,8 @@ const connectionSchema = new mongoose.Schema(
       default: 'pending',
       index: true,
     },
+    lastReadAtFrom: { type: Date, default: null },
+    lastReadAtTo: { type: Date, default: null },
   },
   { timestamps: true }
 );

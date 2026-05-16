@@ -573,31 +573,9 @@ router.get('/mine/hiring-stats', requireAuth, async (req, res) => {
 
   const row = agg[0] || {};
 
-  let candidatesReviewed = row.candidatesReviewed || 0;
-  let interviewsScheduled = row.interviewsScheduled || 0;
-  let hiredCandidates = row.hiredCandidates || 0;
-
-  /** Company / HR: verification pipeline counts (aligned with roster & verify queue). */
-  let companyUserId = null;
-  if (req.user.role === 'company') {
-    companyUserId = req.user.id;
-  } else if (req.user.role === 'recruiter' && req.user.companyId) {
-    companyUserId = req.user.companyId;
-  }
-  if (companyUserId) {
-    const companyOid = new mongoose.Types.ObjectId(companyUserId);
-    const [approved, pending] = await Promise.all([
-      CompanyEmployerJoinRequest.countDocuments({
-        companyUserId: companyOid,
-        status: 'approved',
-      }),
-      CompanyEmployerJoinRequest.countDocuments({
-        companyUserId: companyOid,
-        status: 'pending',
-      }),
-    ]);
-    candidatesReviewed = approved + pending;
-  }
+  const candidatesReviewed = row.candidatesReviewed || 0;
+  const interviewsScheduled = row.interviewsScheduled || 0;
+  const hiredCandidates = row.hiredCandidates || 0;
 
   return res.json({
     jobsPosted,

@@ -10,6 +10,13 @@ import { Connection } from '../models/Connection.js';
 import { ChatMessage } from '../models/ChatMessage.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
+import {
+  CONNECTION_TARGET_ROLES,
+  isConnectionTargetRole,
+  isDmPartner,
+  MEMBER_NETWORK_ROLES,
+  pickConnectionPartner,
+} from '../util/memberNetwork.js';
 import { ensureBdId } from '../services/bdId.js';
 
 const router = Router();
@@ -32,11 +39,22 @@ function sendValidationError(res, errors) {
   return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
 }
 
-function requireJobSeeker(req, res, next) {
-  if (req.user.role !== 'jobSeeker') {
-    return res.status(403).json({ message: 'Connections are available for job seekers only' });
+function requireConnectionsAccess(req, res, next) {
+  if (!MEMBER_NETWORK_ROLES.has(req.user.role)) {
+    return res.status(403).json({ message: 'Connections are not available for this account' });
   }
   return next();
+}
+
+async function partnerPhotoMap(partnerRows) {
+  const seekerIds = partnerRows
+    .filter(({ partner }) => partner.role === 'jobSeeker')
+    .map(({ partner }) => partner._id);
+  if (seekerIds.length === 0) return new Map();
+  const profiles = await JobSeekerProfile.find({ userId: { $in: seekerIds } })
+    .select('userId profilePhotoUrl')
+    .lean();
+  return new Map(profiles.map((p) => [String(p.userId), p.profilePhotoUrl || '']));
 }
 
 function userCard(u) {
@@ -106,7 +124,7 @@ async function excludedPartnerIds(meId) {
   return out;
 }
 
-router.use(requireAuth, requireJobSeeker);
+router.use(requireAuth, requireConnectionsAccess);
 
 router.get('/', async (req, res) => {
   const me = await User.findById(req.user.id);
@@ -121,7 +139,7 @@ router.get('/', async (req, res) => {
   const incoming = incomingDocs
     .map((d) => {
       const from = d.from;
-      if (!from || from.role !== 'jobSeeker') return null;
+      if (!from || !isDmPartner(me.role, from.role)) return null;
       const card = userCard(from);
       return card ? { requestId: String(d._id), ...card } : null;
     })
@@ -135,7 +153,7 @@ router.get('/', async (req, res) => {
   const outgoing = outgoingDocs
     .map((d) => {
       const to = d.to;
-      if (!to || to.role !== 'jobSeeker') return null;
+      if (!to || !isDmPartner(me.role, to.role)) return null;
       const card = userCard(to);
       return card ? { requestId: String(d._id), ...card } : null;
     })
@@ -226,24 +244,12 @@ router.get('/accepted', async (req, res) => {
     .lean();
 
   const rows = [];
-  const partnerIds = [];
-  const meStr = String(me._id);
   for (const d of docs) {
-    const from = d.from;
-    const to = d.to;
-    if (!from || !to) continue;
-    const fromId = typeof from === 'object' && from._id ? String(from._id) : String(from);
-    const partner = fromId === meStr ? to : from;
-    if (!partner || typeof partner !== 'object') continue;
-    if (partner.role !== 'jobSeeker') continue;
-    partnerIds.push(partner._id);
-    rows.push({ doc: d, partner });
+    const picked = pickConnectionPartner(me, d);
+    if (picked) rows.push(picked);
   }
 
-  const profiles = await JobSeekerProfile.find({ userId: { $in: partnerIds } })
-    .select('userId profilePhotoUrl')
-    .lean();
-  const photoByUser = new Map(profiles.map((p) => [String(p.userId), p.profilePhotoUrl || '']));
+  const photoByUser = await partnerPhotoMap(rows);
 
   const connections = rows.map(({ doc, partner }) => {
     const o = partner;
@@ -260,6 +266,124 @@ router.get('/accepted', async (req, res) => {
 
   return res.json({ connections });
 });
+
+function previewFromChatMessage(msg) {
+  if (!msg) return '';
+  const t = String(msg.text || '').trim();
+  if (t) return t.slice(0, 240);
+  const att = (msg.attachments || [])[0];
+  if (att?.name) return `Attachment: ${String(att.name).slice(0, 120)}`;
+  return 'Sent an attachment';
+}
+
+function lastReadAtForUser(connectionDoc, meId) {
+  const meStr = String(meId);
+  const fromId = String(connectionDoc.from?._id ?? connectionDoc.from);
+  const toId = String(connectionDoc.to?._id ?? connectionDoc.to);
+  if (meStr === fromId) return connectionDoc.lastReadAtFrom ?? null;
+  if (meStr === toId) return connectionDoc.lastReadAtTo ?? null;
+  return null;
+}
+
+async function unreadCountForConnection(connectionDoc, meId) {
+  const connectionId = connectionDoc._id;
+  const lastRead = lastReadAtForUser(connectionDoc, meId);
+  const query = {
+    connection: connectionId,
+    sender: { $ne: meId },
+  };
+  if (lastRead) {
+    query.createdAt = { $gt: lastRead };
+  }
+  return ChatMessage.countDocuments(query);
+}
+
+router.get('/inbox', async (req, res) => {
+  const me = await User.findById(req.user.id);
+  if (!me) return res.status(404).json({ message: 'User not found' });
+
+  const docs = await Connection.find({
+    status: 'accepted',
+    $or: [{ from: me._id }, { to: me._id }],
+  })
+    .populate('from', 'name bdId headline connectionField role')
+    .populate('to', 'name bdId headline connectionField role')
+    .sort({ updatedAt: -1 })
+    .lean();
+
+  const rows = [];
+  for (const d of docs) {
+    const picked = pickConnectionPartner(me, d);
+    if (picked) rows.push(picked);
+  }
+
+  const photoByUser = await partnerPhotoMap(rows);
+
+  const threads = await Promise.all(
+    rows.map(async ({ doc, partner }) => {
+      const id = String(partner._id);
+      const connectionId = doc._id;
+      const lastMsg = await ChatMessage.findOne({ connection: connectionId })
+        .sort({ createdAt: -1, _id: -1 })
+        .lean();
+      const unreadCount = await unreadCountForConnection(doc, me._id);
+      let preview = previewFromChatMessage(lastMsg);
+      if (!preview) {
+        const headline = partner.headline || '';
+        const field = effectiveConnectionField(partner);
+        preview = headline.trim() || (field ? `Connected · ${field}` : 'Start a conversation');
+      }
+      return {
+        connectionId: String(connectionId),
+        bdId: partner.bdId,
+        name: partner.name,
+        headline: partner.headline || '',
+        field: effectiveConnectionField(partner),
+        profilePhotoUrl: photoByUser.get(id) || '',
+        preview,
+        lastMessageAt: lastMsg?.createdAt ?? doc.updatedAt ?? doc.createdAt,
+        unreadCount,
+      };
+    })
+  );
+
+  threads.sort((a, b) => {
+    const ta = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+    const tb = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+    return tb - ta;
+  });
+
+  return res.json({ threads });
+});
+
+router.post(
+  '/:connectionId/mark-read',
+  [param('connectionId').isMongoId().withMessage('Invalid connection id')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+
+    const connection = await findAcceptedConnectionForMe(req.params.connectionId, me._id);
+    if (!connection) return res.status(404).json({ message: 'Connection not found' });
+
+    const now = new Date();
+    const meStr = String(me._id);
+    const fromId = String(connection.from);
+    const update =
+      meStr === fromId
+        ? { lastReadAtFrom: now }
+        : meStr === String(connection.to)
+          ? { lastReadAtTo: now }
+          : null;
+    if (!update) return res.status(400).json({ message: 'Invalid connection participant' });
+
+    await Connection.updateOne({ _id: connection._id }, { $set: update });
+    return res.json({ ok: true });
+  }
+);
 
 router.get(
   '/:connectionId/messages',
@@ -343,8 +467,10 @@ router.post(
 
     const targetBd = String(req.body.targetBdId).toUpperCase().trim();
     const target = await User.findOne({ bdId: targetBd });
-    if (!target || target.role !== 'jobSeeker') {
-      return res.status(404).json({ message: 'No job seeker found with that BD ID' });
+    if (!target || !isConnectionTargetRole(target.role)) {
+      return res.status(404).json({
+        message: `No member found with that BD ID (${[...CONNECTION_TARGET_ROLES].join(' or ')} accounts)`,
+      });
     }
     if (String(target._id) === String(me._id)) {
       return res.status(400).json({ message: 'You cannot connect with yourself' });

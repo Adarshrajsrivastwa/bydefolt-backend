@@ -11,6 +11,7 @@ import {
   syncEmployerJoinRequestsForSeeker,
 } from '../services/workExperienceVerification.js';
 import mongoose from 'mongoose';
+import { canManageOwnJobSeekerProfile } from '../util/memberNetwork.js';
 
 const router = Router();
 
@@ -182,8 +183,8 @@ router.get('/by-bd-id/:bdId', async (req, res) => {
 router.get('/me', async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (user.role !== 'jobSeeker') {
-    return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+  if (!canManageOwnJobSeekerProfile(user)) {
+    return res.status(403).json({ message: 'Profile is not available for this account' });
   }
   let doc = await JobSeekerProfile.findOne({ userId: user._id });
   if (!doc) {
@@ -208,8 +209,8 @@ router.get('/me', async (req, res) => {
 router.put('/me', async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (user.role !== 'jobSeeker') {
-    return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+  if (!canManageOwnJobSeekerProfile(user)) {
+    return res.status(403).json({ message: 'Profile is not available for this account' });
   }
 
   const b = req.body && typeof req.body === 'object' ? req.body : {};
@@ -293,8 +294,8 @@ function parseProfileIndex(raw, label) {
 router.delete('/me/work-experiences/:index', async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (user.role !== 'jobSeeker') {
-    return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+  if (!canManageOwnJobSeekerProfile(user)) {
+    return res.status(403).json({ message: 'Profile is not available for this account' });
   }
 
   const parsed = parseProfileIndex(req.params.index, 'work experience');
@@ -329,8 +330,8 @@ router.delete('/me/work-experiences/:index', async (req, res) => {
 router.delete('/me/education/:index', async (req, res) => {
   const user = await User.findById(req.user.id);
   if (!user) return res.status(404).json({ message: 'User not found' });
-  if (user.role !== 'jobSeeker') {
-    return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+  if (!canManageOwnJobSeekerProfile(user)) {
+    return res.status(403).json({ message: 'Profile is not available for this account' });
   }
 
   const parsed = parseProfileIndex(req.params.index, 'education');
@@ -357,8 +358,8 @@ router.post('/me/photo', profileUpload.single('photo'), async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: 'User not found' });
-    if (user.role !== 'jobSeeker') {
-      return res.status(403).json({ message: 'Job seeker profile is only for job seeker accounts' });
+    if (!canManageOwnJobSeekerProfile(user)) {
+      return res.status(403).json({ message: 'Profile is not available for this account' });
     }
     if (!req.file) {
       return res.status(400).json({ message: 'Missing image file (field name: photo)' });
