@@ -17,7 +17,11 @@ import { User } from '../models/User.js';
 import { NetworkFeedPost } from '../models/NetworkFeedPost.js';
 
 import { effectiveConnectionField } from '../util/connectionField.js';
-import { MEMBER_NETWORK_ROLES } from '../util/memberNetwork.js';
+import {
+  CONNECTION_TARGET_ROLES,
+  MEMBER_NETWORK_ROLES,
+} from '../util/memberNetwork.js';
+import { Connection } from '../models/Connection.js';
 import { ensureBdId } from '../services/bdId.js';
 
 
@@ -125,40 +129,79 @@ function requireFeedAccess(req, res, next) {
 
 
 
-function serializePost(doc) {
+/**
+ * @param {import('mongoose').Types.ObjectId | string} meId
+ * @param {string[]} authorIds
+ * @returns {Promise<Map<string, { relation: string, requestId?: string }>>}
+ */
+async function buildAuthorRelationMap(meId, authorIds) {
+  const meStr = String(meId);
+  const unique = [
+    ...new Set(
+      authorIds.map((id) => String(id)).filter((id) => id && id !== meStr)
+    ),
+  ];
+  const map = new Map();
+  for (const id of unique) map.set(id, { relation: 'none' });
+  if (unique.length === 0) return map;
 
+  const objectIds = unique
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  if (objectIds.length === 0) return map;
+
+  const edges = await Connection.find({
+    $or: [
+      { from: meId, to: { $in: objectIds } },
+      { from: { $in: objectIds }, to: meId },
+    ],
+    status: { $in: ['pending', 'accepted'] },
+  })
+    .select('from to status')
+    .lean();
+
+  for (const e of edges) {
+    const from = String(e.from);
+    const to = String(e.to);
+    const partner = from === meStr ? to : from;
+    if (e.status === 'accepted') {
+      map.set(partner, { relation: 'connected' });
+    } else if (from === meStr) {
+      map.set(partner, { relation: 'pending_out' });
+    } else {
+      map.set(partner, { relation: 'pending_in', requestId: String(e._id) });
+    }
+  }
+  return map;
+}
+
+function serializePost(doc, relationMeta = { relation: 'none' }) {
   const a = doc.author;
 
   if (!a || !a._id) return null;
 
+  const authorId = a._id.toString();
+  const role = a.role || '';
+
   return {
-
     id: doc._id.toString(),
-
     body: doc.body ?? '',
-
     images: Array.isArray(doc.images) ? doc.images : [],
-
     connectionField: doc.connectionField,
-
     createdAt: doc.createdAt,
-
     updatedAt: doc.updatedAt,
-
+    authorRelation: relationMeta.relation,
+    connectionRequestId: relationMeta.requestId || '',
+    canConnect: CONNECTION_TARGET_ROLES.has(role),
     author: {
-
-      id: a._id.toString(),
-
+      id: authorId,
       name: a.name,
-
       headline: a.headline || '',
-
       bdId: a.bdId || '',
-
+      role,
     },
-
   };
-
 }
 
 
@@ -219,8 +262,6 @@ router.get('/', async (req, res) => {
 
 
 
-  const field = effectiveConnectionField(me);
-
   let limit = Number.parseInt(String(req.query.limit ?? '24'), 10);
 
   if (!Number.isFinite(limit) || limit < 1) limit = 24;
@@ -231,7 +272,7 @@ router.get('/', async (req, res) => {
 
   const take = Math.min(120, Math.max(limit * 3, limit));
 
-  const raw = await NetworkFeedPost.find({ connectionField: field })
+  const raw = await NetworkFeedPost.find({})
 
     .populate('author', 'name headline bdId connectionField role')
 
@@ -243,26 +284,35 @@ router.get('/', async (req, res) => {
 
 
 
+  const filtered = raw.filter((d) => d.author && d.author._id);
+
   const meId = String(me._id);
-  const filtered = raw.filter((d) => {
-    if (!d.author || !d.author._id) return false;
-    if (String(d.author._id) === meId) return true;
-    return d.author.role === 'jobSeeker';
-  });
+  const authorIds = filtered.map((d) => String(d.author._id));
+  const relMap = await buildAuthorRelationMap(me._id, authorIds);
 
-  shuffleInPlace(filtered);
+  const connected = [];
+  const rest = [];
+  for (const d of filtered) {
+    const rel = relMap.get(String(d.author._id))?.relation ?? 'none';
+    if (rel === 'connected') connected.push(d);
+    else rest.push(d);
+  }
+  shuffleInPlace(connected);
+  shuffleInPlace(rest);
+  const ordered = [...connected, ...rest].slice(0, limit);
 
-  const posts = filtered
-
-    .slice(0, limit)
-
-    .map(serializePost)
-
+  const posts = ordered
+    .map((d) => {
+      const aid = String(d.author._id);
+      const meta =
+        aid === meId
+          ? { relation: 'self' }
+          : relMap.get(aid) ?? { relation: 'none' };
+      return serializePost(d, meta);
+    })
     .filter(Boolean);
 
-
-
-  return res.json({ field, posts });
+  return res.json({ field: '', posts, global: true });
 
 });
 

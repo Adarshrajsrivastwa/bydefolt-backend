@@ -187,10 +187,10 @@ router.get('/suggestions', async (req, res) => {
     const excluded = await excludedPartnerIds(me._id);
 
     const candidates = await User.find({
-      role: 'jobSeeker',
+      role: { $in: [...CONNECTION_TARGET_ROLES] },
       _id: { $ne: me._id },
     })
-      .select('name bdId headline connectionField')
+      .select('name bdId headline connectionField role')
       .limit(600)
       .lean();
 
@@ -205,6 +205,7 @@ router.get('/suggestions', async (req, res) => {
         name: u.name,
         headline: u.headline || '',
         field: effectiveConnectionField(u),
+        role: u.role || 'jobSeeker',
       });
       seenIds.add(String(u._id));
       if (suggestions.length >= limit) break;
@@ -221,6 +222,7 @@ router.get('/suggestions', async (req, res) => {
           name: u.name,
           headline: u.headline || '',
           field: effectiveConnectionField(u),
+          role: u.role || 'jobSeeker',
         });
         seenIds.add(String(u._id));
         discoverFallback = true;
