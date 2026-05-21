@@ -5,9 +5,7 @@ import fs from 'node:fs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
-import { Connection } from '../models/Connection.js';
-import { CompanyFollow } from '../models/CompanyFollow.js';
-import { isFollowTargetRole } from '../util/memberNetwork.js';
+import { relationshipForViewer } from '../services/memberRelationship.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
 import {
   clearStaleEmployerRequestsForSeeker,
@@ -159,59 +157,6 @@ function sanitizeAppreciations(list) {
 }
 
 router.use(requireAuth);
-
-/** Viewer ↔ target connection state for public profile screens. */
-async function relationshipForViewer(viewerId, targetId) {
-  const me = String(viewerId);
-  const other = String(targetId);
-  if (me === other) {
-    return { status: 'self', requestId: '', canMessage: false };
-  }
-
-  const targetUser = await User.findById(targetId).select('role').lean();
-  if (targetUser && isFollowTargetRole(targetUser.role)) {
-    const follows = await CompanyFollow.exists({
-      follower: viewerId,
-      company: targetId,
-    });
-    if (follows) {
-      return { status: 'following', requestId: '', canMessage: false };
-    }
-    return { status: 'none', requestId: '', canMessage: false };
-  }
-
-  const edge = await Connection.findOne({
-    $or: [
-      { from: viewerId, to: targetId },
-      { from: targetId, to: viewerId },
-    ],
-    status: { $in: ['pending', 'accepted'] },
-  })
-    .select('from to status')
-    .lean();
-  if (!edge) {
-    return { status: 'none', requestId: '', canMessage: false };
-  }
-  if (edge.status === 'accepted') {
-    return {
-      status: 'connected',
-      requestId: String(edge._id),
-      canMessage: true,
-    };
-  }
-  if (String(edge.from) === me) {
-    return {
-      status: 'pending_out',
-      requestId: String(edge._id),
-      canMessage: false,
-    };
-  }
-  return {
-    status: 'pending_in',
-    requestId: String(edge._id),
-    canMessage: false,
-  };
-}
 
 /**
  * Rich public profile payload for Connect / request cards (member + CV + relationship).

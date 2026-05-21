@@ -30,7 +30,7 @@ import {
   MEMBER_NETWORK_ROLES,
 } from '../util/memberNetwork.js';
 import { Connection } from '../models/Connection.js';
-import { CompanyFollow } from '../models/CompanyFollow.js';
+import { followedCompanyIdsForUser } from '../services/followerNetwork.js';
 import { ensureBdId } from '../services/bdId.js';
 
 
@@ -160,7 +160,7 @@ async function buildAuthorRelationMap(meId, authorIds) {
 
   if (objectIds.length === 0) return map;
 
-  const [edges, authors, companyFollows] = await Promise.all([
+  const [edges, authors, followedIds] = await Promise.all([
     Connection.find({
       $or: [
         { from: meId, to: { $in: objectIds } },
@@ -171,16 +171,14 @@ async function buildAuthorRelationMap(meId, authorIds) {
       .select('from to status')
       .lean(),
     User.find({ _id: { $in: objectIds } }).select('_id role').lean(),
-    CompanyFollow.find({
-      follower: meId,
-      company: { $in: objectIds },
-    })
-      .select('company')
-      .lean(),
+    followedCompanyIdsForUser(meId),
   ]);
 
   const roleById = new Map(authors.map((a) => [String(a._id), a.role || '']));
-  const followedCompanies = new Set(companyFollows.map((f) => String(f.company)));
+  const authorIdSet = new Set(objectIds.map(String));
+  const followedCompanies = new Set(
+    followedIds.filter((id) => authorIdSet.has(id))
+  );
 
   for (const e of edges) {
     const from = String(e.from);

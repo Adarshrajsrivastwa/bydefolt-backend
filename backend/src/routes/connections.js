@@ -7,7 +7,7 @@ import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { Connection } from '../models/Connection.js';
-import { CompanyFollow } from '../models/CompanyFollow.js';
+import { Follower } from '../models/Follower.js';
 import { ChatMessage } from '../models/ChatMessage.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
@@ -26,6 +26,19 @@ import {
   countCompanyFollows,
   countProfessionalConnections,
 } from '../services/memberNetworkStats.js';
+import {
+  followCompanyByBdId,
+  NETWORK_LABELS,
+  relationshipForViewer,
+  unfollowCompanyByBdId,
+} from '../services/memberRelationship.js';
+import {
+  deleteFollowerById,
+  listFollowersAccepted,
+  listFollowersForUser,
+  migrateLegacyCompanyFollowsOnce,
+} from '../services/followerNetwork.js';
+import { networkActionForTargetRole } from '../util/memberNetwork.js';
 
 const router = Router();
 const chatUploadDir = path.join(process.cwd(), 'uploads', 'chat');
@@ -123,37 +136,6 @@ async function memberPreviewForUser(u, photoMap) {
     role: u.role || 'jobSeeker',
     profilePhotoUrl: photo,
   };
-}
-
-async function listFollowingForUser(userId) {
-  const rows = await CompanyFollow.find({ follower: userId })
-    .sort({ createdAt: -1 })
-    .lean();
-  if (rows.length === 0) return [];
-
-  const companyIds = rows.map((r) => r.company);
-  const companies = await User.find({
-    _id: { $in: companyIds },
-    role: 'company',
-  })
-    .select('name bdId headline connectionField role companyStatus')
-    .lean();
-  const byId = new Map(companies.map((c) => [String(c._id), c]));
-
-  return rows
-    .map((row) => {
-      const company = byId.get(String(row.company));
-      if (!company) return null;
-      const card = userCard(company);
-      if (!card) return null;
-      return {
-        followId: String(row._id),
-        ...card,
-        role: 'company',
-        profilePhotoUrl: '',
-      };
-    })
-    .filter(Boolean);
 }
 
 async function buildMemberPreviews(me, target) {
@@ -274,12 +256,16 @@ function shuffleArray(arr) {
 }
 
 async function excludedPartnerIds(meId) {
-  const edges = await Connection.find({
-    $or: [{ from: meId }, { to: meId }],
-    status: { $in: ['pending', 'accepted'] },
-  })
-    .select('from to')
-    .lean();
+  await migrateLegacyCompanyFollowsOnce();
+  const [edges, followerEdges] = await Promise.all([
+    Connection.find({
+      $or: [{ from: meId }, { to: meId }],
+      status: { $in: ['pending', 'accepted'] },
+    })
+      .select('from to')
+      .lean(),
+    Follower.find({ from: meId, status: 'following' }).select('to').lean(),
+  ]);
 
   const out = new Set();
   const mid = String(meId);
@@ -287,6 +273,9 @@ async function excludedPartnerIds(meId) {
     const a = String(e.from);
     const b = String(e.to);
     out.add(a === mid ? b : a);
+  }
+  for (const f of followerEdges) {
+    out.add(String(f.to));
   }
   return out;
 }
@@ -301,7 +290,11 @@ router.get('/member-stats/:bdId', async (req, res) => {
   if (!target) return res.status(404).json({ message: 'Member not found' });
 
   const stats = await connectionStatsForUser(target._id);
-  return res.json({ bdId, ...stats });
+  return res.json({
+    bdId,
+    ...stats,
+    labels: NETWORK_LABELS,
+  });
 });
 
 router.get('/', async (req, res) => {
@@ -347,7 +340,7 @@ router.get('/', async (req, res) => {
   const [connectedCount, followingCount, following] = await Promise.all([
     countProfessionalConnections(me._id),
     countCompanyFollows(me._id),
-    listFollowingForUser(me._id),
+    listFollowersForUser(me._id),
   ]);
 
   return res.json({
@@ -359,6 +352,45 @@ router.get('/', async (req, res) => {
     following,
     incoming,
     outgoing,
+    labels: NETWORK_LABELS,
+    network: {
+      connections: { count: connectedCount, label: NETWORK_LABELS.connections },
+      following: { count: followingCount, label: NETWORK_LABELS.following },
+    },
+  });
+});
+
+router.get('/lookup/:bdId', async (req, res) => {
+  const bdId = String(req.params.bdId || '').trim().toUpperCase();
+  if (!bdId) return res.status(400).json({ message: 'BD ID is required' });
+
+  const me = await User.findById(req.user.id);
+  if (!me) return res.status(404).json({ message: 'User not found' });
+
+  const target = await User.findOne({ bdId }).select(
+    'name bdId headline connectionField role companyStatus'
+  );
+  if (!target) {
+    return res.status(404).json({ message: 'No account found with that BD ID' });
+  }
+
+  const card = userCard(target);
+  const relationship = await relationshipForViewer(me._id, target._id);
+  const action = networkActionForTargetRole(target.role);
+
+  return res.json({
+    bdId,
+    member: card
+      ? { ...card, role: target.role || 'jobSeeker', profilePhotoUrl: '' }
+      : null,
+    relationship,
+    action,
+    actionLabel:
+      action === 'following'
+        ? NETWORK_LABELS.following
+        : action === 'connection'
+          ? NETWORK_LABELS.connections
+          : '',
   });
 });
 
@@ -686,28 +718,27 @@ router.post(
     }
 
     if (isFollowTargetRole(target.role)) {
-      if (target.companyStatus && target.companyStatus !== 'approved') {
-        return res.status(404).json({ message: 'This company is not available to follow yet' });
+      const followResult = await followCompanyByBdId(me, targetBd);
+      if (followResult.error) {
+        return res
+          .status(followResult.error.status)
+          .json({ message: followResult.error.message });
       }
-      const existing = await CompanyFollow.findOne({
-        follower: me._id,
-        company: target._id,
-      });
-      if (existing) {
-        return res.status(409).json({ message: 'You are already following this company' });
-      }
-      const doc = await CompanyFollow.create({
-        follower: me._id,
-        company: target._id,
-      });
-      const card = userCard(target);
+      const card = userCard(followResult.company);
       return res.status(201).json({
         ok: true,
         kind: 'following',
-        message: 'Now following this company',
-        followId: String(doc._id),
+        message: followResult.message,
+        followerId: followResult.followerId,
+        followId: followResult.followId,
         company: card
-          ? { ...card, role: 'company', followId: String(doc._id) }
+          ? {
+              ...card,
+              role: 'company',
+              followerId: followResult.followerId,
+              followId: followResult.followId,
+              status: 'following',
+            }
           : null,
       });
     }
@@ -758,7 +789,11 @@ router.post(
       if (previews.fromPreview) doc.fromPreview = previews.fromPreview;
       if (previews.toPreview) doc.toPreview = previews.toPreview;
       await doc.save();
-      return res.status(201).json({ ok: true, message: 'Connection request sent' });
+      return res.status(201).json({
+        ok: true,
+        kind: 'connection',
+        message: 'Connection request sent',
+      });
     }
 
     const previews = await buildMemberPreviews(me, target);
@@ -777,16 +812,71 @@ router.post(
   }
 );
 
+router.get('/followers', async (req, res) => {
+  const me = await User.findById(req.user.id);
+  if (!me) return res.status(404).json({ message: 'User not found' });
+  const followers = await listFollowersAccepted(me._id);
+  return res.json({
+    followers,
+    count: followers.length,
+    label: NETWORK_LABELS.following,
+  });
+});
+
+/** Alias of GET /followers (dashboard uses `following`). */
 router.get('/following', async (req, res) => {
   const me = await User.findById(req.user.id);
   if (!me) return res.status(404).json({ message: 'User not found' });
-  const following = await listFollowingForUser(me._id);
-  return res.json({ following, count: following.length });
+  const following = await listFollowersForUser(me._id);
+  return res.json({
+    following,
+    count: following.length,
+    label: NETWORK_LABELS.following,
+  });
 });
 
+router.post(
+  '/following',
+  [body('targetBdId').trim().notEmpty().withMessage('targetBdId is required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+    await ensureBdId(me);
+
+    const targetBd = String(req.body.targetBdId).toUpperCase().trim();
+    const followResult = await followCompanyByBdId(me, targetBd);
+    if (followResult.error) {
+      return res
+        .status(followResult.error.status)
+        .json({ message: followResult.error.message });
+    }
+
+    const card = userCard(followResult.company);
+    return res.status(201).json({
+      ok: true,
+      kind: 'following',
+      message: followResult.message,
+      followerId: followResult.followerId,
+      followId: followResult.followId,
+      company: card
+        ? {
+            ...card,
+            role: 'company',
+            followerId: followResult.followerId,
+            followId: followResult.followId,
+            status: 'following',
+          }
+        : null,
+    });
+  }
+);
+
 router.delete(
-  '/follow/:bdId',
-  [param('bdId').trim().notEmpty().withMessage('bdId is required')],
+  '/followers/:followerId',
+  [param('followerId').isMongoId().withMessage('Invalid follower id')],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return sendValidationError(res, errors);
@@ -794,19 +884,40 @@ router.delete(
     const me = await User.findById(req.user.id);
     if (!me) return res.status(404).json({ message: 'User not found' });
 
-    const bdId = String(req.params.bdId).toUpperCase().trim();
-    const company = await User.findOne({ bdId, role: 'company' }).select('_id');
-    if (!company) return res.status(404).json({ message: 'Company not found' });
-
-    const result = await CompanyFollow.deleteOne({
-      follower: me._id,
-      company: company._id,
-    });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: 'You are not following this company' });
+    const result = await deleteFollowerById(me, req.params.followerId);
+    if (result.error) {
+      return res.status(result.error.status).json({ message: result.error.message });
     }
-    return res.json({ ok: true, message: 'Unfollowed company' });
+    return res.json({ ok: true, message: result.message });
   }
+);
+
+async function handleUnfollowCompany(req, res) {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+  const me = await User.findById(req.user.id);
+  if (!me) return res.status(404).json({ message: 'User not found' });
+
+  const bdId = String(req.params.bdId).toUpperCase().trim();
+  const result = await unfollowCompanyByBdId(me, bdId);
+  if (result.error) {
+    return res.status(result.error.status).json({ message: result.error.message });
+  }
+  return res.json({ ok: true, message: result.message });
+}
+
+router.delete(
+  '/following/:bdId',
+  [param('bdId').trim().notEmpty().withMessage('bdId is required')],
+  handleUnfollowCompany
+);
+
+/** @deprecated Prefer DELETE /following/:bdId */
+router.delete(
+  '/follow/:bdId',
+  [param('bdId').trim().notEmpty().withMessage('bdId is required')],
+  handleUnfollowCompany
 );
 
 router.get(

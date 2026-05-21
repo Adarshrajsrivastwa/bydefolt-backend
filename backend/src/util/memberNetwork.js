@@ -16,8 +16,8 @@ export function isFollowTargetRole(role) {
 }
 
 export function networkActionForTargetRole(role) {
-  if (isFollowTargetRole(role)) return 'follow';
-  if (isConnectionTargetRole(role)) return 'connect';
+  if (isFollowTargetRole(role)) return 'following';
+  if (isConnectionTargetRole(role)) return 'connection';
   return null;
 }
 
