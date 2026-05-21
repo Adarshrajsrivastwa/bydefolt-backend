@@ -18,6 +18,7 @@ import {
   pickConnectionPartner,
 } from '../util/memberNetwork.js';
 import { ensureBdId } from '../services/bdId.js';
+import { connectionStatsForUser } from '../services/memberNetworkStats.js';
 
 const router = Router();
 const chatUploadDir = path.join(process.cwd(), 'uploads', 'chat');
@@ -253,6 +254,17 @@ async function excludedPartnerIds(meId) {
 }
 
 router.use(requireAuth, requireConnectionsAccess);
+
+router.get('/member-stats/:bdId', async (req, res) => {
+  const bdId = String(req.params.bdId || '').trim().toUpperCase();
+  if (!bdId) return res.status(400).json({ message: 'BD ID is required' });
+
+  const target = await User.findOne({ bdId }).select('_id role');
+  if (!target) return res.status(404).json({ message: 'Member not found' });
+
+  const stats = await connectionStatsForUser(target._id);
+  return res.json({ bdId, ...stats });
+});
 
 router.get('/', async (req, res) => {
   const me = await User.findById(req.user.id);

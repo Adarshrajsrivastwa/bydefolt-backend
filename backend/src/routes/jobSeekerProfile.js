@@ -14,6 +14,7 @@ import {
 } from '../services/workExperienceVerification.js';
 import mongoose from 'mongoose';
 import { canManageOwnJobSeekerProfile } from '../util/memberNetwork.js';
+import { connectionStatsForUser } from '../services/memberNetworkStats.js';
 
 const router = Router();
 
@@ -244,6 +245,7 @@ router.get('/view/:bdId', async (req, res) => {
   }
 
   const relationship = await relationshipForViewer(viewer._id, target._id);
+  const { connectedCount, followingCount } = await connectionStatsForUser(target._id);
 
   return res.json({
     member: {
@@ -254,6 +256,8 @@ router.get('/view/:bdId', async (req, res) => {
       field: effectiveConnectionField(target),
       role: target.role || 'jobSeeker',
       profilePhotoUrl,
+      connectedCount,
+      followingCount,
     },
     profile,
     relationship,
