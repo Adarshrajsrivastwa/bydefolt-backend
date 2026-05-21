@@ -48,7 +48,13 @@ function requireConnectionsAccess(req, res, next) {
 
 async function partnerPhotoMap(partnerRows) {
   const seekerIds = partnerRows
-    .filter(({ partner }) => partner.role === 'jobSeeker')
+    .filter(
+      ({ partner }) =>
+        partner &&
+        typeof partner === 'object' &&
+        partner._id &&
+        partner.role === 'jobSeeker'
+    )
     .map(({ partner }) => partner._id);
   if (seekerIds.length === 0) return new Map();
   const profiles = await JobSeekerProfile.find({ userId: { $in: seekerIds } })
@@ -57,14 +63,77 @@ async function partnerPhotoMap(partnerRows) {
   return new Map(profiles.map((p) => [String(p.userId), p.profilePhotoUrl || '']));
 }
 
+function displayUserName(u) {
+  if (!u) return '';
+  const o = typeof u.toObject === 'function' ? u.toObject() : u;
+  const name = String(o.name ?? '').trim();
+  if (name) return name;
+  const email = String(o.email ?? '').trim().toLowerCase();
+  if (email.includes('@')) {
+    const local = email.split('@')[0]?.trim();
+    if (local) return local.charAt(0).toUpperCase() + local.slice(1);
+  }
+  const bdId = String(o.bdId ?? '').trim();
+  return bdId;
+}
+
 function userCard(u) {
   if (!u) return null;
   const o = typeof u.toObject === 'function' ? u.toObject() : u;
+  const bdId = String(o.bdId ?? '').trim();
+  if (!bdId) return null;
+  const name = displayUserName(o);
   return {
-    bdId: o.bdId,
-    name: o.name,
+    bdId,
+    name: name || bdId,
     headline: o.headline || '',
     field: effectiveConnectionField(o),
+  };
+}
+
+async function usersByObjectIds(ids) {
+  const unique = [
+    ...new Set(
+      ids
+        .map((id) => String(id ?? '').trim())
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    ),
+  ];
+  if (unique.length === 0) return new Map();
+  const users = await User.find({ _id: { $in: unique } })
+    .select('name bdId headline connectionField role email')
+    .lean();
+  return new Map(users.map((u) => [String(u._id), u]));
+}
+
+function resolvePartnerUser(partnerRef, userMap) {
+  if (!partnerRef) return null;
+  if (typeof partnerRef === 'object' && partnerRef._id) {
+    const id = String(partnerRef._id);
+    const fromMap = userMap.get(id);
+    if (fromMap) return fromMap;
+    if (partnerRef.bdId) return partnerRef;
+  }
+  const id = String(partnerRef);
+  if (mongoose.Types.ObjectId.isValid(id)) return userMap.get(id) ?? null;
+  return null;
+}
+
+function mapPendingConnectionRow(d, me, direction, userMap, photoMap) {
+  const partnerRef = direction === 'incoming' ? d.from : d.to;
+  const partner = resolvePartnerUser(partnerRef, userMap);
+  if (!partner || !isDmPartner(me.role, partner.role)) return null;
+  const card = userCard(partner);
+  if (!card) return null;
+  const photo =
+    partner.role === 'jobSeeker'
+      ? photoMap.get(String(partner._id)) || ''
+      : '';
+  return {
+    requestId: String(d._id),
+    ...card,
+    role: partner.role || 'jobSeeker',
+    profilePhotoUrl: photo,
   };
 }
 
@@ -132,59 +201,38 @@ router.get('/', async (req, res) => {
   const bdId = await ensureBdId(me);
 
   const incomingDocs = await Connection.find({ to: me._id, status: 'pending' })
-    .populate('from', 'name bdId headline connectionField role')
+    .populate('from', 'name bdId headline connectionField role email')
     .sort({ createdAt: -1 })
     .lean();
 
+  const outgoingDocs = await Connection.find({ from: me._id, status: 'pending' })
+    .populate('to', 'name bdId headline connectionField role email')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const partnerIds = [
+    ...incomingDocs.map((d) => d.from?._id ?? d.from),
+    ...outgoingDocs.map((d) => d.to?._id ?? d.to),
+  ];
+  const userMap = await usersByObjectIds(partnerIds);
+
   const incomingPhotoMap = await partnerPhotoMap(
-    incomingDocs.map((d) => ({ partner: d.from })).filter((x) => x.partner)
+    incomingDocs
+      .map((d) => ({ partner: resolvePartnerUser(d.from, userMap) }))
+      .filter((x) => x.partner)
+  );
+  const outgoingPhotoMap = await partnerPhotoMap(
+    outgoingDocs
+      .map((d) => ({ partner: resolvePartnerUser(d.to, userMap) }))
+      .filter((x) => x.partner)
   );
 
   const incoming = incomingDocs
-    .map((d) => {
-      const from = d.from;
-      if (!from || !isDmPartner(me.role, from.role)) return null;
-      const card = userCard(from);
-      if (!card) return null;
-      const photo =
-        from.role === 'jobSeeker'
-          ? incomingPhotoMap.get(String(from._id)) || ''
-          : '';
-      return {
-        requestId: String(d._id),
-        ...card,
-        role: from.role || 'jobSeeker',
-        profilePhotoUrl: photo,
-      };
-    })
+    .map((d) => mapPendingConnectionRow(d, me, 'incoming', userMap, incomingPhotoMap))
     .filter(Boolean);
 
-  const outgoingDocs = await Connection.find({ from: me._id, status: 'pending' })
-    .populate('to', 'name bdId headline connectionField role')
-    .sort({ createdAt: -1 })
-    .lean();
-
-  const outgoingPhotoMap = await partnerPhotoMap(
-    outgoingDocs.map((d) => ({ partner: d.to })).filter((x) => x.partner)
-  );
-
   const outgoing = outgoingDocs
-    .map((d) => {
-      const to = d.to;
-      if (!to || !isDmPartner(me.role, to.role)) return null;
-      const card = userCard(to);
-      if (!card) return null;
-      const photo =
-        to.role === 'jobSeeker'
-          ? outgoingPhotoMap.get(String(to._id)) || ''
-          : '';
-      return {
-        requestId: String(d._id),
-        ...card,
-        role: to.role || 'jobSeeker',
-        profilePhotoUrl: photo,
-      };
-    })
+    .map((d) => mapPendingConnectionRow(d, me, 'outgoing', userMap, outgoingPhotoMap))
     .filter(Boolean);
 
   const acceptedCount = await Connection.countDocuments({
@@ -247,7 +295,7 @@ router.get('/suggestions', async (req, res) => {
         if (suggestions.length >= limit) break;
         suggestions.push({
           bdId: u.bdId,
-          name: u.name,
+          name: displayUserName(u),
           headline: u.headline || '',
           field: effectiveConnectionField(u),
           role: u.role || 'jobSeeker',
@@ -306,7 +354,7 @@ router.get('/accepted', async (req, res) => {
     return {
       connectionId: String(doc._id),
       bdId: o.bdId,
-      name: o.name,
+      name: displayUserName(o),
       headline: o.headline || '',
       field: effectiveConnectionField(o),
       profilePhotoUrl: photoByUser.get(id) || '',
@@ -385,7 +433,7 @@ router.get('/inbox', async (req, res) => {
       return {
         connectionId: String(connectionId),
         bdId: partner.bdId,
-        name: partner.name,
+        name: displayUserName(partner),
         headline: partner.headline || '',
         field: effectiveConnectionField(partner),
         profilePhotoUrl: photoByUser.get(id) || '',
@@ -562,6 +610,53 @@ router.post(
 
     await Connection.create({ from: me._id, to: target._id, status: 'pending' });
     return res.status(201).json({ ok: true, message: 'Connection request sent' });
+  }
+);
+
+router.get(
+  '/partner/:requestId',
+  [param('requestId').isMongoId().withMessage('Invalid request id')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+
+    const doc = await Connection.findById(req.params.requestId).lean();
+    if (!doc || doc.status !== 'pending') {
+      return res.status(404).json({ message: 'Request not found' });
+    }
+
+    const meStr = String(me._id);
+    const fromStr = String(doc.from);
+    const toStr = String(doc.to);
+    if (fromStr !== meStr && toStr !== meStr) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+
+    const partnerId = fromStr === meStr ? doc.to : doc.from;
+    const userMap = await usersByObjectIds([partnerId]);
+    const partner = userMap.get(String(partnerId));
+    if (!partner || !isDmPartner(me.role, partner.role)) {
+      return res.status(404).json({ message: 'Member not found' });
+    }
+
+    const card = userCard(partner);
+    if (!card) return res.status(404).json({ message: 'Member not found' });
+
+    const photoMap = await partnerPhotoMap([{ partner }]);
+    const photo =
+      partner.role === 'jobSeeker'
+        ? photoMap.get(String(partner._id)) || ''
+        : '';
+
+    return res.json({
+      requestId: String(doc._id),
+      ...card,
+      role: partner.role || 'jobSeeker',
+      profilePhotoUrl: photo,
+    });
   }
 );
 
