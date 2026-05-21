@@ -15,6 +15,13 @@ import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 
 import { NetworkFeedPost } from '../models/NetworkFeedPost.js';
+import { FeedPostReaction, FEED_REACTION_TYPES } from '../models/FeedPostReaction.js';
+import { FeedPostComment } from '../models/FeedPostComment.js';
+import {
+  engagementForPost,
+  engagementForPosts,
+  serializeEngagement,
+} from '../services/feedEngagement.js';
 
 import { effectiveConnectionField } from '../util/connectionField.js';
 import {
@@ -176,13 +183,14 @@ async function buildAuthorRelationMap(meId, authorIds) {
   return map;
 }
 
-function serializePost(doc, relationMeta = { relation: 'none' }) {
+function serializePost(doc, relationMeta = { relation: 'none' }, engagement = null) {
   const a = doc.author;
 
   if (!a || !a._id) return null;
 
   const authorId = a._id.toString();
   const role = a.role || '';
+  const eng = serializeEngagement(engagement);
 
   return {
     id: doc._id.toString(),
@@ -194,6 +202,10 @@ function serializePost(doc, relationMeta = { relation: 'none' }) {
     authorRelation: relationMeta.relation,
     connectionRequestId: relationMeta.requestId || '',
     canConnect: CONNECTION_TARGET_ROLES.has(role),
+    reactionCounts: eng.reactionCounts,
+    totalReactions: eng.totalReactions,
+    myReaction: eng.myReaction,
+    commentCount: eng.commentCount,
     author: {
       id: authorId,
       name: a.name,
@@ -301,6 +313,11 @@ router.get('/', async (req, res) => {
   shuffleInPlace(rest);
   const ordered = [...connected, ...rest].slice(0, limit);
 
+  const engagementMap = await engagementForPosts(
+    ordered.map((d) => d._id),
+    me._id
+  );
+
   const posts = ordered
     .map((d) => {
       const aid = String(d.author._id);
@@ -308,7 +325,8 @@ router.get('/', async (req, res) => {
         aid === meId
           ? { relation: 'self' }
           : relMap.get(aid) ?? { relation: 'none' };
-      return serializePost(d, meta);
+      const eng = engagementMap.get(String(d._id));
+      return serializePost(d, meta, eng);
     })
     .filter(Boolean);
 
@@ -376,7 +394,8 @@ router.post('/', feedUploadMiddleware, async (req, res) => {
 
 
 
-    const out = serializePost(populated);
+    const eng = await engagementForPost(post._id, me._id);
+    const out = serializePost(populated, { relation: 'self' }, eng);
 
     if (!out) return res.status(500).json({ message: 'Could not load new post' });
 
@@ -425,6 +444,141 @@ function parseKeepImages(raw) {
 }
 
 
+
+router.put('/:postId/reactions', async (req, res) => {
+  const postId = req.params.postId;
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return res.status(400).json({ message: 'Invalid post id' });
+  }
+
+  const type = String(req.body?.type ?? '').toLowerCase().trim();
+  if (!FEED_REACTION_TYPES.includes(type)) {
+    return res.status(400).json({ message: 'Invalid reaction type' });
+  }
+
+  const post = await NetworkFeedPost.findById(postId).select('_id').lean();
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+
+  const meOid = new mongoose.Types.ObjectId(req.user.id);
+  const postOid = new mongoose.Types.ObjectId(postId);
+
+  const existing = await FeedPostReaction.findOne({ post: postOid, user: meOid });
+  if (existing && existing.type === type) {
+    await FeedPostReaction.deleteOne({ _id: existing._id });
+  } else {
+    await FeedPostReaction.findOneAndUpdate(
+      { post: postOid, user: meOid },
+      { type },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  }
+
+  const engagement = serializeEngagement(
+    await engagementForPost(postOid, meOid)
+  );
+  return res.json({ engagement });
+});
+
+router.delete('/:postId/reactions', async (req, res) => {
+  const postId = req.params.postId;
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return res.status(400).json({ message: 'Invalid post id' });
+  }
+
+  const post = await NetworkFeedPost.findById(postId).select('_id').lean();
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+
+  await FeedPostReaction.deleteOne({
+    post: new mongoose.Types.ObjectId(postId),
+    user: new mongoose.Types.ObjectId(req.user.id),
+  });
+
+  const engagement = serializeEngagement(
+    await engagementForPost(postId, req.user.id)
+  );
+  return res.json({ engagement });
+});
+
+router.get('/:postId/comments', async (req, res) => {
+  const postId = req.params.postId;
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return res.status(400).json({ message: 'Invalid post id' });
+  }
+
+  const post = await NetworkFeedPost.findById(postId).select('_id').lean();
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+
+  let limit = Number.parseInt(String(req.query.limit ?? '40'), 10);
+  if (!Number.isFinite(limit) || limit < 1) limit = 40;
+  if (limit > 80) limit = 80;
+
+  const rows = await FeedPostComment.find({ post: new mongoose.Types.ObjectId(postId) })
+    .populate('user', 'name bdId headline')
+    .sort({ createdAt: 1 })
+    .limit(limit)
+    .lean();
+
+  const comments = rows.map((c) => {
+    const u = c.user;
+    return {
+      id: c._id.toString(),
+      body: c.body ?? '',
+      createdAt: c.createdAt,
+      author: {
+        id: u?._id?.toString() ?? '',
+        name: u?.name ?? 'Member',
+        bdId: u?.bdId ?? '',
+        headline: u?.headline ?? '',
+      },
+    };
+  });
+
+  return res.json({ comments });
+});
+
+router.post('/:postId/comments', async (req, res) => {
+  const postId = req.params.postId;
+  if (!mongoose.Types.ObjectId.isValid(postId)) {
+    return res.status(400).json({ message: 'Invalid post id' });
+  }
+
+  const text = String(req.body?.body ?? '').trim();
+  if (!text) return res.status(400).json({ message: 'Comment cannot be empty' });
+  if (text.length > 1000) {
+    return res.status(400).json({ message: 'Comment must be at most 1000 characters' });
+  }
+
+  const post = await NetworkFeedPost.findById(postId).select('_id').lean();
+  if (!post) return res.status(404).json({ message: 'Post not found' });
+
+  const me = await User.findById(req.user.id).select('_id name bdId headline');
+  if (!me) return res.status(404).json({ message: 'User not found' });
+
+  const created = await FeedPostComment.create({
+    post: new mongoose.Types.ObjectId(postId),
+    user: me._id,
+    body: text,
+  });
+
+  const engagement = serializeEngagement(
+    await engagementForPost(postId, me._id)
+  );
+
+  return res.status(201).json({
+    comment: {
+      id: created._id.toString(),
+      body: created.body,
+      createdAt: created.createdAt,
+      author: {
+        id: me._id.toString(),
+        name: me.name,
+        bdId: me.bdId ?? '',
+        headline: me.headline ?? '',
+      },
+    },
+    engagement,
+  });
+});
 
 router.patch('/:postId', (req, res, next) => {
   const ct = String(req.headers['content-type'] || '');
@@ -550,7 +704,8 @@ router.patch('/:postId', (req, res, next) => {
 
 
 
-    const out = serializePost(populated);
+    const eng = await engagementForPost(post._id, me._id);
+    const out = serializePost(populated, { relation: 'self' }, eng);
 
     if (!out) return res.status(500).json({ message: 'Could not load post' });
 
