@@ -91,6 +91,42 @@ function userCard(u) {
   };
 }
 
+function cardFromStoredPreview(preview) {
+  if (!preview) return null;
+  const bdId = String(preview.bdId ?? '').trim();
+  if (!bdId) return null;
+  const name = String(preview.name ?? '').trim() || bdId;
+  return {
+    bdId,
+    name,
+    headline: preview.headline || '',
+    field: preview.field || '',
+  };
+}
+
+async function memberPreviewForUser(u, photoMap) {
+  const card = userCard(u);
+  if (!card || !u) return null;
+  const id = String(u._id ?? '');
+  const photo =
+    u.role === 'jobSeeker' && id ? photoMap.get(id) || '' : '';
+  return {
+    ...card,
+    role: u.role || 'jobSeeker',
+    profilePhotoUrl: photo,
+  };
+}
+
+async function buildMemberPreviews(me, target) {
+  const photoMap = await partnerPhotoMap([
+    { partner: me },
+    { partner: target },
+  ]);
+  const fromPreview = await memberPreviewForUser(me, photoMap);
+  const toPreview = await memberPreviewForUser(target, photoMap);
+  return { fromPreview, toPreview };
+}
+
 async function usersByObjectIds(ids) {
   const unique = [
     ...new Set(
@@ -121,19 +157,42 @@ function resolvePartnerUser(partnerRef, userMap) {
 
 function mapPendingConnectionRow(d, me, direction, userMap, photoMap) {
   const partnerRef = direction === 'incoming' ? d.from : d.to;
+  const storedPreview = direction === 'incoming' ? d.fromPreview : d.toPreview;
   const partner = resolvePartnerUser(partnerRef, userMap);
   if (!partner || !isDmPartner(me.role, partner.role)) return null;
-  const card = userCard(partner);
-  if (!card) return null;
-  const photo =
-    partner.role === 'jobSeeker'
-      ? photoMap.get(String(partner._id)) || ''
-      : '';
+
+  let card = cardFromStoredPreview(storedPreview);
+  let role = storedPreview?.role || partner.role || 'jobSeeker';
+  let profilePhotoUrl = storedPreview?.profilePhotoUrl || '';
+
+  if (!card) {
+    card = userCard(partner);
+    if (!card) return null;
+    role = partner.role || 'jobSeeker';
+    profilePhotoUrl =
+      partner.role === 'jobSeeker'
+        ? photoMap.get(String(partner._id)) || ''
+        : '';
+    const previewField = direction === 'incoming' ? 'fromPreview' : 'toPreview';
+    void Connection.updateOne(
+      { _id: d._id },
+      {
+        $set: {
+          [previewField]: {
+            ...card,
+            role,
+            profilePhotoUrl,
+          },
+        },
+      }
+    ).catch(() => {});
+  }
+
   return {
     requestId: String(d._id),
     ...card,
-    role: partner.role || 'jobSeeker',
-    profilePhotoUrl: photo,
+    role,
+    profilePhotoUrl,
   };
 }
 
@@ -604,11 +663,21 @@ router.post(
         return res.status(409).json({ message: 'You are already connected' });
       }
       doc.status = 'pending';
+      const previews = await buildMemberPreviews(me, target);
+      if (previews.fromPreview) doc.fromPreview = previews.fromPreview;
+      if (previews.toPreview) doc.toPreview = previews.toPreview;
       await doc.save();
       return res.status(201).json({ ok: true, message: 'Connection request sent' });
     }
 
-    await Connection.create({ from: me._id, to: target._id, status: 'pending' });
+    const previews = await buildMemberPreviews(me, target);
+    await Connection.create({
+      from: me._id,
+      to: target._id,
+      status: 'pending',
+      fromPreview: previews.fromPreview,
+      toPreview: previews.toPreview,
+    });
     return res.status(201).json({ ok: true, message: 'Connection request sent' });
   }
 );
