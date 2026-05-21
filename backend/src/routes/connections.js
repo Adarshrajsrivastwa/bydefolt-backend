@@ -136,12 +136,26 @@ router.get('/', async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
+  const incomingPhotoMap = await partnerPhotoMap(
+    incomingDocs.map((d) => ({ partner: d.from })).filter((x) => x.partner)
+  );
+
   const incoming = incomingDocs
     .map((d) => {
       const from = d.from;
       if (!from || !isDmPartner(me.role, from.role)) return null;
       const card = userCard(from);
-      return card ? { requestId: String(d._id), ...card } : null;
+      if (!card) return null;
+      const photo =
+        from.role === 'jobSeeker'
+          ? incomingPhotoMap.get(String(from._id)) || ''
+          : '';
+      return {
+        requestId: String(d._id),
+        ...card,
+        role: from.role || 'jobSeeker',
+        profilePhotoUrl: photo,
+      };
     })
     .filter(Boolean);
 
@@ -150,12 +164,26 @@ router.get('/', async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
 
+  const outgoingPhotoMap = await partnerPhotoMap(
+    outgoingDocs.map((d) => ({ partner: d.to })).filter((x) => x.partner)
+  );
+
   const outgoing = outgoingDocs
     .map((d) => {
       const to = d.to;
       if (!to || !isDmPartner(me.role, to.role)) return null;
       const card = userCard(to);
-      return card ? { requestId: String(d._id), ...card } : null;
+      if (!card) return null;
+      const photo =
+        to.role === 'jobSeeker'
+          ? outgoingPhotoMap.get(String(to._id)) || ''
+          : '';
+      return {
+        requestId: String(d._id),
+        ...card,
+        role: to.role || 'jobSeeker',
+        profilePhotoUrl: photo,
+      };
     })
     .filter(Boolean);
 
@@ -229,7 +257,26 @@ router.get('/suggestions', async (req, res) => {
       }
     }
 
-    return res.json({ field: myField, suggestions, discoverFallback });
+    const suggestionUsers = candidates.filter((u) =>
+      suggestions.some((s) => s.bdId === u.bdId)
+    );
+    const sugPhotoMap = await partnerPhotoMap(
+      suggestionUsers.map((u) => ({ partner: u }))
+    );
+    const enrichedSuggestions = suggestions.map((s) => {
+      const u = suggestionUsers.find((c) => c.bdId === s.bdId);
+      const photo =
+        u && u.role === 'jobSeeker'
+          ? sugPhotoMap.get(String(u._id)) || ''
+          : '';
+      return { ...s, profilePhotoUrl: photo };
+    });
+
+    return res.json({
+      field: myField,
+      suggestions: enrichedSuggestions,
+      discoverFallback,
+    });
 });
 
 router.get('/accepted', async (req, res) => {

@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
+import { Connection } from '../models/Connection.js';
+import { effectiveConnectionField } from '../util/connectionField.js';
 import {
   clearStaleEmployerRequestsForSeeker,
   enrichWorkExperiencesWithVerification,
@@ -154,6 +156,109 @@ function sanitizeAppreciations(list) {
 }
 
 router.use(requireAuth);
+
+/** Viewer ↔ target connection state for public profile screens. */
+async function relationshipForViewer(viewerId, targetId) {
+  const me = String(viewerId);
+  const other = String(targetId);
+  if (me === other) {
+    return { status: 'self', requestId: '', canMessage: false };
+  }
+  const edge = await Connection.findOne({
+    $or: [
+      { from: viewerId, to: targetId },
+      { from: targetId, to: viewerId },
+    ],
+    status: { $in: ['pending', 'accepted'] },
+  })
+    .select('from to status')
+    .lean();
+  if (!edge) {
+    return { status: 'none', requestId: '', canMessage: false };
+  }
+  if (edge.status === 'accepted') {
+    return {
+      status: 'connected',
+      requestId: String(edge._id),
+      canMessage: true,
+    };
+  }
+  if (String(edge.from) === me) {
+    return {
+      status: 'pending_out',
+      requestId: String(edge._id),
+      canMessage: false,
+    };
+  }
+  return {
+    status: 'pending_in',
+    requestId: String(edge._id),
+    canMessage: false,
+  };
+}
+
+/**
+ * Rich public profile payload for Connect / request cards (member + CV + relationship).
+ */
+router.get('/view/:bdId', async (req, res) => {
+  const bdId = String(req.params.bdId || '').trim().toUpperCase();
+  if (!bdId) return res.status(400).json({ message: 'BD ID is required' });
+
+  const viewer = await User.findById(req.user.id).select('_id role');
+  if (!viewer) return res.status(404).json({ message: 'User not found' });
+
+  const target = await User.findOne({ bdId }).select(
+    'name bdId headline connectionField role'
+  );
+  if (!target) return res.status(404).json({ message: 'Member not found' });
+
+  let profilePhotoUrl = '';
+  let profile = await mapProfileForSeeker(
+    {
+      about: '',
+      profilePhotoUrl: '',
+      workExperiences: [],
+      education: [],
+      skills: [],
+      languages: [],
+      appreciations: [],
+    },
+    target._id.toString()
+  );
+
+  if (target.role === 'jobSeeker') {
+    const doc = await JobSeekerProfile.findOne({ userId: target._id });
+    profile = await mapProfileForSeeker(
+      doc || {
+        about: '',
+        profilePhotoUrl: '',
+        workExperiences: [],
+        education: [],
+        skills: [],
+        languages: [],
+        appreciations: [],
+      },
+      target._id.toString()
+    );
+    profilePhotoUrl = profile.profilePhotoUrl || '';
+  }
+
+  const relationship = await relationshipForViewer(viewer._id, target._id);
+
+  return res.json({
+    member: {
+      id: target._id.toString(),
+      name: target.name,
+      bdId: target.bdId || bdId,
+      headline: target.headline || '',
+      field: effectiveConnectionField(target),
+      role: target.role || 'jobSeeker',
+      profilePhotoUrl,
+    },
+    profile,
+    relationship,
+  });
+});
 
 router.get('/by-bd-id/:bdId', async (req, res) => {
   const bdId = String(req.params.bdId || '').trim().toUpperCase();
