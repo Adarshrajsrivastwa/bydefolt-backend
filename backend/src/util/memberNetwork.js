@@ -1,11 +1,24 @@
 /** Roles that use feed, connections inbox, and member messaging APIs. */
 export const MEMBER_NETWORK_ROLES = new Set(['jobSeeker', 'recruiter', 'company', 'owner']);
 
-/** BD ID targets for connection requests (Follow). */
+/** BD ID targets for mutual connection requests (professionals + HR). */
 export const CONNECTION_TARGET_ROLES = new Set(['jobSeeker', 'recruiter']);
+
+/** Company accounts are followed (one-way), not connected. */
+export const FOLLOW_TARGET_ROLES = new Set(['company']);
 
 export function isConnectionTargetRole(role) {
   return CONNECTION_TARGET_ROLES.has(role);
+}
+
+export function isFollowTargetRole(role) {
+  return role === 'company';
+}
+
+export function networkActionForTargetRole(role) {
+  if (isFollowTargetRole(role)) return 'follow';
+  if (isConnectionTargetRole(role)) return 'connect';
+  return null;
 }
 
 /** Job seeker CV API (also for recruiters who filled profile as members). */

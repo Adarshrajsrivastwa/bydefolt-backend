@@ -25,10 +25,12 @@ import {
 
 import { effectiveConnectionField } from '../util/connectionField.js';
 import {
-  CONNECTION_TARGET_ROLES,
+  isConnectionTargetRole,
+  isFollowTargetRole,
   MEMBER_NETWORK_ROLES,
 } from '../util/memberNetwork.js';
 import { Connection } from '../models/Connection.js';
+import { CompanyFollow } from '../models/CompanyFollow.js';
 import { ensureBdId } from '../services/bdId.js';
 
 
@@ -158,20 +160,34 @@ async function buildAuthorRelationMap(meId, authorIds) {
 
   if (objectIds.length === 0) return map;
 
-  const edges = await Connection.find({
-    $or: [
-      { from: meId, to: { $in: objectIds } },
-      { from: { $in: objectIds }, to: meId },
-    ],
-    status: { $in: ['pending', 'accepted'] },
-  })
-    .select('from to status')
-    .lean();
+  const [edges, authors, companyFollows] = await Promise.all([
+    Connection.find({
+      $or: [
+        { from: meId, to: { $in: objectIds } },
+        { from: { $in: objectIds }, to: meId },
+      ],
+      status: { $in: ['pending', 'accepted'] },
+    })
+      .select('from to status')
+      .lean(),
+    User.find({ _id: { $in: objectIds } }).select('_id role').lean(),
+    CompanyFollow.find({
+      follower: meId,
+      company: { $in: objectIds },
+    })
+      .select('company')
+      .lean(),
+  ]);
+
+  const roleById = new Map(authors.map((a) => [String(a._id), a.role || '']));
+  const followedCompanies = new Set(companyFollows.map((f) => String(f.company)));
 
   for (const e of edges) {
     const from = String(e.from);
     const to = String(e.to);
     const partner = from === meStr ? to : from;
+    const partnerRole = roleById.get(partner);
+    if (isFollowTargetRole(partnerRole)) continue;
     if (e.status === 'accepted') {
       map.set(partner, { relation: 'connected' });
     } else if (from === meStr) {
@@ -180,6 +196,14 @@ async function buildAuthorRelationMap(meId, authorIds) {
       map.set(partner, { relation: 'pending_in', requestId: String(e._id) });
     }
   }
+
+  for (const id of unique) {
+    if (!isFollowTargetRole(roleById.get(id))) continue;
+    if (followedCompanies.has(id)) {
+      map.set(id, { relation: 'following' });
+    }
+  }
+
   return map;
 }
 
@@ -201,7 +225,8 @@ function serializePost(doc, relationMeta = { relation: 'none' }, engagement = nu
     updatedAt: doc.updatedAt,
     authorRelation: relationMeta.relation,
     connectionRequestId: relationMeta.requestId || '',
-    canConnect: CONNECTION_TARGET_ROLES.has(role),
+    canConnect: isConnectionTargetRole(role),
+    canFollow: isFollowTargetRole(role),
     reactionCounts: eng.reactionCounts,
     totalReactions: eng.totalReactions,
     myReaction: eng.myReaction,

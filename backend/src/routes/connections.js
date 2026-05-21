@@ -7,18 +7,25 @@ import mongoose from 'mongoose';
 import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { Connection } from '../models/Connection.js';
+import { CompanyFollow } from '../models/CompanyFollow.js';
 import { ChatMessage } from '../models/ChatMessage.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
 import {
   CONNECTION_TARGET_ROLES,
+  FOLLOW_TARGET_ROLES,
   isConnectionTargetRole,
   isDmPartner,
+  isFollowTargetRole,
   MEMBER_NETWORK_ROLES,
   pickConnectionPartner,
 } from '../util/memberNetwork.js';
 import { ensureBdId } from '../services/bdId.js';
-import { connectionStatsForUser } from '../services/memberNetworkStats.js';
+import {
+  connectionStatsForUser,
+  countCompanyFollows,
+  countProfessionalConnections,
+} from '../services/memberNetworkStats.js';
 
 const router = Router();
 const chatUploadDir = path.join(process.cwd(), 'uploads', 'chat');
@@ -116,6 +123,37 @@ async function memberPreviewForUser(u, photoMap) {
     role: u.role || 'jobSeeker',
     profilePhotoUrl: photo,
   };
+}
+
+async function listFollowingForUser(userId) {
+  const rows = await CompanyFollow.find({ follower: userId })
+    .sort({ createdAt: -1 })
+    .lean();
+  if (rows.length === 0) return [];
+
+  const companyIds = rows.map((r) => r.company);
+  const companies = await User.find({
+    _id: { $in: companyIds },
+    role: 'company',
+  })
+    .select('name bdId headline connectionField role companyStatus')
+    .lean();
+  const byId = new Map(companies.map((c) => [String(c._id), c]));
+
+  return rows
+    .map((row) => {
+      const company = byId.get(String(row.company));
+      if (!company) return null;
+      const card = userCard(company);
+      if (!card) return null;
+      return {
+        followId: String(row._id),
+        ...card,
+        role: 'company',
+        profilePhotoUrl: '',
+      };
+    })
+    .filter(Boolean);
 }
 
 async function buildMemberPreviews(me, target) {
@@ -306,16 +344,19 @@ router.get('/', async (req, res) => {
     .map((d) => mapPendingConnectionRow(d, me, 'outgoing', userMap, outgoingPhotoMap))
     .filter(Boolean);
 
-  const acceptedCount = await Connection.countDocuments({
-    $or: [{ from: me._id }, { to: me._id }],
-    status: 'accepted',
-  });
+  const [connectedCount, followingCount, following] = await Promise.all([
+    countProfessionalConnections(me._id),
+    countCompanyFollows(me._id),
+    listFollowingForUser(me._id),
+  ]);
 
   return res.json({
     bdId,
     headline: me.headline || '',
     connectionField: effectiveConnectionField(me),
-    connectedCount: acceptedCount,
+    connectedCount,
+    followingCount,
+    following,
     incoming,
     outgoing,
   });
@@ -637,13 +678,49 @@ router.post(
 
     const targetBd = String(req.body.targetBdId).toUpperCase().trim();
     const target = await User.findOne({ bdId: targetBd });
-    if (!target || !isConnectionTargetRole(target.role)) {
-      return res.status(404).json({
-        message: `No member found with that BD ID (${[...CONNECTION_TARGET_ROLES].join(' or ')} accounts)`,
-      });
+    if (!target) {
+      return res.status(404).json({ message: 'No account found with that BD ID' });
     }
     if (String(target._id) === String(me._id)) {
       return res.status(400).json({ message: 'You cannot connect with yourself' });
+    }
+
+    if (isFollowTargetRole(target.role)) {
+      if (target.companyStatus && target.companyStatus !== 'approved') {
+        return res.status(404).json({ message: 'This company is not available to follow yet' });
+      }
+      const existing = await CompanyFollow.findOne({
+        follower: me._id,
+        company: target._id,
+      });
+      if (existing) {
+        return res.status(409).json({ message: 'You are already following this company' });
+      }
+      const doc = await CompanyFollow.create({
+        follower: me._id,
+        company: target._id,
+      });
+      const card = userCard(target);
+      return res.status(201).json({
+        ok: true,
+        kind: 'following',
+        message: 'Now following this company',
+        followId: String(doc._id),
+        company: card
+          ? { ...card, role: 'company', followId: String(doc._id) }
+          : null,
+      });
+    }
+
+    if (!isConnectionTargetRole(target.role)) {
+      return res.status(400).json({
+        message:
+          'Company accounts are followed (one-way). Connection requests are for job seekers and HR only.',
+        hint: {
+          followRoles: [...FOLLOW_TARGET_ROLES],
+          connectionRoles: [...CONNECTION_TARGET_ROLES],
+        },
+      });
     }
 
     const connected = await Connection.exists({
@@ -692,7 +769,43 @@ router.post(
       fromPreview: previews.fromPreview,
       toPreview: previews.toPreview,
     });
-    return res.status(201).json({ ok: true, message: 'Connection request sent' });
+    return res.status(201).json({
+      ok: true,
+      kind: 'connection',
+      message: 'Connection request sent',
+    });
+  }
+);
+
+router.get('/following', async (req, res) => {
+  const me = await User.findById(req.user.id);
+  if (!me) return res.status(404).json({ message: 'User not found' });
+  const following = await listFollowingForUser(me._id);
+  return res.json({ following, count: following.length });
+});
+
+router.delete(
+  '/follow/:bdId',
+  [param('bdId').trim().notEmpty().withMessage('bdId is required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const me = await User.findById(req.user.id);
+    if (!me) return res.status(404).json({ message: 'User not found' });
+
+    const bdId = String(req.params.bdId).toUpperCase().trim();
+    const company = await User.findOne({ bdId, role: 'company' }).select('_id');
+    if (!company) return res.status(404).json({ message: 'Company not found' });
+
+    const result = await CompanyFollow.deleteOne({
+      follower: me._id,
+      company: company._id,
+    });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'You are not following this company' });
+    }
+    return res.json({ ok: true, message: 'Unfollowed company' });
   }
 );
 

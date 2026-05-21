@@ -6,6 +6,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { User } from '../models/User.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { Connection } from '../models/Connection.js';
+import { CompanyFollow } from '../models/CompanyFollow.js';
+import { isFollowTargetRole } from '../util/memberNetwork.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
 import {
   clearStaleEmployerRequestsForSeeker,
@@ -165,6 +167,19 @@ async function relationshipForViewer(viewerId, targetId) {
   if (me === other) {
     return { status: 'self', requestId: '', canMessage: false };
   }
+
+  const targetUser = await User.findById(targetId).select('role').lean();
+  if (targetUser && isFollowTargetRole(targetUser.role)) {
+    const follows = await CompanyFollow.exists({
+      follower: viewerId,
+      company: targetId,
+    });
+    if (follows) {
+      return { status: 'following', requestId: '', canMessage: false };
+    }
+    return { status: 'none', requestId: '', canMessage: false };
+  }
+
   const edge = await Connection.findOne({
     $or: [
       { from: viewerId, to: targetId },
