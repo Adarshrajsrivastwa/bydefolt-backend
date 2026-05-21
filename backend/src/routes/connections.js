@@ -325,7 +325,7 @@ router.get('/suggestions', async (req, res) => {
       role: { $in: [...CONNECTION_TARGET_ROLES] },
       _id: { $ne: me._id },
     })
-      .select('name bdId headline connectionField role')
+      .select('name bdId headline connectionField role email')
       .limit(600)
       .lean();
 
@@ -335,9 +335,10 @@ router.get('/suggestions', async (req, res) => {
     for (const u of candidates) {
       if (excluded.has(String(u._id))) continue;
       if (effectiveConnectionField(u) !== myField) continue;
+      const label = displayUserName(u);
       suggestions.push({
         bdId: u.bdId,
-        name: u.name,
+        name: label || u.bdId,
         headline: u.headline || '',
         field: effectiveConnectionField(u),
         role: u.role || 'jobSeeker',
@@ -352,9 +353,10 @@ router.get('/suggestions', async (req, res) => {
       const shuffled = shuffleArray(rest);
       for (const u of shuffled) {
         if (suggestions.length >= limit) break;
+        const label = displayUserName(u);
         suggestions.push({
           bdId: u.bdId,
-          name: displayUserName(u),
+          name: label || u.bdId,
           headline: u.headline || '',
           field: effectiveConnectionField(u),
           role: u.role || 'jobSeeker',
