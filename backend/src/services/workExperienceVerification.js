@@ -113,11 +113,8 @@ function sanitizeCompanyUserId(raw) {
 }
 
 /**
- * Attach `verificationStatus` per work row:
- * - verified — company approved the employer request
- * - pending — request awaiting HR / company review
- * - unverified — company on platform, no approval yet
- * - not_registered — company name not linked to an approved company account
+ * Internal status while resolving employer join requests.
+ * Client UI only shows a badge when [mapWorkExperienceForClient] sets companyVerified.
  */
 export async function enrichWorkExperiencesWithVerification(workExperiences, seekerId) {
   if (!Array.isArray(workExperiences) || workExperiences.length === 0) {
@@ -160,13 +157,31 @@ export async function enrichWorkExperiencesWithVerification(workExperiences, see
       }
     }
 
-    out.push({
-      ...w,
-      companyUserId,
-      verificationStatus,
-    });
+    out.push(
+      mapWorkExperienceForClient({
+        ...w,
+        companyUserId,
+        verificationStatus,
+      })
+    );
   }
   return out;
+}
+
+/**
+ * API shape for work rows: only expose verification when company approved.
+ * No "pending" / "request sent" labels on profile — HR flow stays server-side.
+ */
+export function mapWorkExperienceForClient(row) {
+  const verified = row.verificationStatus === 'verified';
+  const base = { ...row };
+  base.companyVerified = verified;
+  if (verified) {
+    base.verificationStatus = 'verified';
+  } else {
+    delete base.verificationStatus;
+  }
+  return base;
 }
 
 async function companyIdsFromWorkRows(rows) {

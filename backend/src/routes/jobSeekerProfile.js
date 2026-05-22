@@ -15,6 +15,16 @@ import {
 import mongoose from 'mongoose';
 import { canManageOwnJobSeekerProfile } from '../util/memberNetwork.js';
 import { connectionStatsForUser } from '../services/memberNetworkStats.js';
+import {
+  EDUCATION_LEVELS,
+  FIELD_OF_STUDY_BY_LEVEL,
+} from '../constants/educationOptions.js';
+import {
+  MAX_PROFICIENCY_LEVEL,
+  MIN_PROFICIENCY_LEVEL,
+  PROFICIENCY_LABELS,
+  normalizeLanguageList,
+} from '../constants/languageOptions.js';
 
 const router = Router();
 
@@ -137,14 +147,7 @@ function sanitizeSkills(list) {
 }
 
 function sanitizeLanguages(list) {
-  if (!Array.isArray(list)) return [];
-  return list.slice(0, MAX_LANG).map((x) => ({
-    name: String(x.name ?? '').trim().slice(0, 80) || 'Language',
-    flagEmoji: String(x.flagEmoji ?? '🌐').slice(0, 8),
-    oralLevel: Math.min(10, Math.max(0, Number(x.oralLevel) || 0)),
-    writtenLevel: Math.min(10, Math.max(0, Number(x.writtenLevel) || 0)),
-    isFirstLanguage: Boolean(x.isFirstLanguage),
-  }));
+  return normalizeLanguageList(list, MAX_LANG);
 }
 
 function sanitizeAppreciations(list) {
@@ -157,6 +160,25 @@ function sanitizeAppreciations(list) {
 }
 
 router.use(requireAuth);
+
+/** Dropdown options for education form (levels + courses per level). */
+router.get('/education-options', (_req, res) => {
+  res.json({
+    levels: EDUCATION_LEVELS,
+    coursesByLevel: FIELD_OF_STUDY_BY_LEVEL,
+  });
+});
+
+/** Language form schema: 5-star proficiency + native flag (no separate oral/written). */
+router.get('/language-options', (_req, res) => {
+  res.json({
+    minProficiencyLevel: MIN_PROFICIENCY_LEVEL,
+    maxProficiencyLevel: MAX_PROFICIENCY_LEVEL,
+    proficiencyLabels: PROFICIENCY_LABELS,
+    fields: ['name', 'flagEmoji', 'proficiencyLevel', 'isNative'],
+    deprecatedFields: ['oralLevel', 'writtenLevel', 'isFirstLanguage'],
+  });
+});
 
 /**
  * Rich public profile payload for Connect / request cards (member + CV + relationship).

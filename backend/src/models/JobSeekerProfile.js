@@ -31,8 +31,13 @@ const languageSchema = new mongoose.Schema(
   {
     name: { type: String, trim: true, required: true },
     flagEmoji: { type: String, trim: true, default: '🌐' },
-    oralLevel: { type: Number, min: 0, max: 10, default: 5 },
-    writtenLevel: { type: Number, min: 0, max: 10, default: 5 },
+    /** Single proficiency scale 1–5 (stars in app). */
+    proficiencyLevel: { type: Number, min: 1, max: 5, default: 3 },
+    isNative: { type: Boolean, default: false },
+    /** @deprecated — synced from proficiencyLevel (1–5) for legacy clients */
+    oralLevel: { type: Number, min: 1, max: 5, default: 3 },
+    writtenLevel: { type: Number, min: 1, max: 5, default: 3 },
+    /** @deprecated — use isNative */
     isFirstLanguage: { type: Boolean, default: false },
   },
   { _id: false }
