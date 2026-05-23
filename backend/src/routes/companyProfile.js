@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { body, param, query, validationResult } from 'express-validator';
+import mongoose from 'mongoose';
 import fs from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
@@ -58,8 +59,37 @@ function mapProfile(doc) {
     companyPhone: doc.companyPhone || '',
     companyEmailContact: doc.companyEmailContact || '',
     about: doc.about || '',
+    logoUrl: doc.logoUrl || '',
   };
 }
+
+const logoUploadDir = path.join(process.cwd(), 'uploads', 'company-logos');
+fs.mkdirSync(logoUploadDir, { recursive: true });
+
+function unlinkCompanyLogoIfOwned(urlPath) {
+  const p = String(urlPath || '').trim();
+  if (!p.startsWith('/uploads/company-logos/')) return;
+  const full = path.join(process.cwd(), p.replace(/^\//, ''));
+  try {
+    if (fs.existsSync(full)) fs.unlinkSync(full);
+  } catch (_) {
+    // ignore
+  }
+}
+
+const logoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, logoUploadDir),
+    filename: (_req, file, cb) => {
+      const safe = String(file.originalname || 'logo').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    cb(isAllowedNoticeImage(file) ? null : new Error('Only JPEG, PNG, WebP, or GIF images are allowed'), isAllowedNoticeImage(file));
+  },
+});
 
 async function ensureCompanyProfile(userId) {
   let profile = await CompanyProfile.findOne({ userId });
@@ -165,6 +195,33 @@ router.put(
     return res.json({ profile: mapProfile(profile) });
   }
 );
+
+router.post('/me/logo', logoUpload.single('logo'), async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    if (user.role !== 'company') {
+      return res.status(403).json({ message: 'Company profile is only available for company accounts' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ message: 'Missing image file (field name: logo)' });
+    }
+
+    const publicUrl = `/uploads/company-logos/${req.file.filename}`;
+    const profile = await ensureCompanyProfile(user._id);
+    const prevLogo = profile.logoUrl;
+    profile.logoUrl = publicUrl;
+    await profile.save();
+    if (prevLogo && prevLogo !== publicUrl) {
+      unlinkCompanyLogoIfOwned(prevLogo);
+    }
+    return res.json({ profile: mapProfile(profile) });
+  } catch (e) {
+    return res.status(400).json({ message: e?.message || 'Upload failed' });
+  }
+});
 
 /** Linked recruiters (HR) for this company — backed by [User.companyId]. */
 router.get('/recruiters', async (req, res) => {
@@ -541,23 +598,28 @@ router.post(
     const bodyText = String(req.body.body).trim();
     const companyOid = ctx.companyUserId;
     const sentBy = ctx.reviewer._id;
+    const noticeBatchId = new mongoose.Types.ObjectId();
+    const recipientSet = new Set(recipientIds.map((id) => String(id)));
+    recipientSet.add(sentBy.toString());
 
-    const docs = recipientIds.map((rid) => ({
-      recipientId: rid,
+    const docs = [...recipientSet].map((rid) => ({
+      recipientId: new mongoose.Types.ObjectId(rid),
       companyUserId: companyOid,
       sentBy,
       audience,
       title,
       body: bodyText,
       imageUrl,
+      noticeBatchId,
     }));
 
     await UserNotification.insertMany(docs, { ordered: false });
 
     return res.status(201).json({
-      sentCount: recipientIds.length,
+      sentCount: recipientSet.size,
       audience,
       title,
+      noticeBatchId: noticeBatchId.toString(),
     });
   }
 );

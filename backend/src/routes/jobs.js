@@ -29,7 +29,10 @@ import { JobSave } from '../models/JobSave.js';
 import { JobApplication, applicationStages } from '../models/JobApplication.js';
 import { CompanyEmployerJoinRequest } from '../models/CompanyEmployerJoinRequest.js';
 
-
+/** Job seeker board: applications, saves, apply (also HR in personal member view). */
+function canUseJobSeekerJobFeatures(role) {
+  return role === 'jobSeeker' || role === 'recruiter';
+}
 
 const router = Router();
 
@@ -161,7 +164,7 @@ router.get(
 
   async (req, res) => {
 
-    if (req.user.role !== 'jobSeeker') {
+    if (!canUseJobSeekerJobFeatures(req.user.role)) {
 
       return res.status(403).json({ message: 'Only job seekers can access this' });
 
@@ -199,7 +202,7 @@ router.get(
 
   async (req, res) => {
 
-    if (req.user.role !== 'jobSeeker') {
+    if (!canUseJobSeekerJobFeatures(req.user.role)) {
 
       return res.status(403).json({ message: 'Only job seekers can access this' });
 
@@ -259,7 +262,7 @@ router.get(
 
   async (req, res) => {
 
-    if (req.user.role !== 'jobSeeker') {
+    if (!canUseJobSeekerJobFeatures(req.user.role)) {
 
       return res.status(403).json({ message: 'Only job seekers can access this' });
 
@@ -361,7 +364,7 @@ router.get(
 
     let appliedSet = new Set();
 
-    if (req.user?.role === 'jobSeeker' && jobs.length > 0) {
+    if (req.user && canUseJobSeekerJobFeatures(req.user.role) && jobs.length > 0) {
 
       const ids = jobs.map((j) => j._id);
 
@@ -719,9 +722,9 @@ router.post(
 
     body('location').trim().notEmpty().withMessage('Location is required').isLength({ max: 180 }),
 
-    body('workplace').optional().isIn(workplaceOptions),
+    body('workplace').optional().trim().isLength({ max: 80 }),
 
-    body('employmentType').optional().isIn(employmentTypeOptions),
+    body('employmentType').optional().trim().isLength({ max: 80 }),
 
   ],
 
@@ -815,7 +818,7 @@ router.post(
 
   async (req, res) => {
 
-    if (req.user.role !== 'jobSeeker') {
+    if (!canUseJobSeekerJobFeatures(req.user.role)) {
 
       return res.status(403).json({ message: 'Only job seekers can save jobs' });
 
@@ -881,7 +884,7 @@ router.post(
 
   async (req, res) => {
 
-    if (req.user.role !== 'jobSeeker') {
+    if (!canUseJobSeekerJobFeatures(req.user.role)) {
 
       return res.status(403).json({ message: 'Only job seekers can apply to jobs' });
 
@@ -943,9 +946,9 @@ router.patch(
 
     body('location').optional().trim().notEmpty().isLength({ max: 180 }),
 
-    body('workplace').optional().isIn(workplaceOptions),
+    body('workplace').optional().trim().isLength({ max: 80 }),
 
-    body('employmentType').optional().isIn(employmentTypeOptions),
+    body('employmentType').optional().trim().isLength({ max: 80 }),
 
     body('status').optional().isIn(['published', 'closed']),
 

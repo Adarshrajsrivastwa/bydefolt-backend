@@ -18,6 +18,7 @@ const companyProfileSchema = new mongoose.Schema(
     companyPhone: { type: String, trim: true, default: '' },
     companyEmailContact: { type: String, trim: true, default: '' },
     about: { type: String, trim: true, default: '' },
+    logoUrl: { type: String, trim: true, default: '' },
     verificationPdf: {
       originalName: { type: String, trim: true, default: '' },
       mimeType: { type: String, trim: true, default: '' },

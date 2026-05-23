@@ -32,11 +32,18 @@ const userNotificationSchema = new mongoose.Schema(
     /** Owner / platform broadcast (inbox shows as ByDefolt). */
     isPlatformBroadcast: { type: Boolean, default: false, index: true },
     readAt: { type: Date, default: null },
+    /** Same id on every copy from one send (enables batch update by sender). */
+    noticeBatchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      index: true,
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
 userNotificationSchema.index({ recipientId: 1, createdAt: -1 });
+userNotificationSchema.index({ noticeBatchId: 1, sentBy: 1 });
 
 export const UserNotification = mongoose.model('UserNotification', userNotificationSchema);
 export { audienceTypes as notificationAudienceTypes };

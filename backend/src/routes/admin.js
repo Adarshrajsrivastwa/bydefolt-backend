@@ -18,6 +18,7 @@ import {
   resolveOwnerBroadcastRecipients,
 } from '../services/platformOwnerBroadcast.js';
 import { deleteJobPostCascade } from '../services/deleteJobPostCascade.js';
+import { listUnregisteredCompanyNames } from '../services/unregisteredCompanies.js';
 
 const noticeUploadDir = path.join(process.cwd(), 'uploads', 'notices');
 fs.mkdirSync(noticeUploadDir, { recursive: true });
@@ -303,6 +304,20 @@ router.get('/companies/pending', async (_req, res) => {
   const byId = new Map(profiles.map((p) => [p.userId.toString(), p]));
   return res.json({ companies: companies.map((c) => mapCompanyRow(c, byId.get(c._id.toString()))) });
 });
+
+/** Names users entered (work experience, etc.) that are not registered company accounts. */
+router.get(
+  '/companies/unregistered',
+  [query('q').optional().trim().isLength({ max: 80 })],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+    const companies = await listUnregisteredCompanyNames({
+      searchQuery: String(req.query.q || ''),
+    });
+    return res.json({ companies });
+  }
+);
 
 router.get(
   '/companies/:companyId',
@@ -863,8 +878,11 @@ router.post(
     const title = String(req.body.title).trim();
     const bodyText = String(req.body.body).trim();
     const ownerOid = new mongoose.Types.ObjectId(req.user.id);
+    const noticeBatchId = new mongoose.Types.ObjectId();
+    const recipientSet = new Set(recipientIds.map((id) => String(id)));
+    recipientSet.add(ownerOid.toString());
 
-    const docs = recipientIds.map((rid) => ({
+    const docs = [...recipientSet].map((rid) => ({
       recipientId: new mongoose.Types.ObjectId(rid),
       companyUserId: ownerOid,
       sentBy: ownerOid,
@@ -873,6 +891,7 @@ router.post(
       body: bodyText,
       imageUrl,
       isPlatformBroadcast: true,
+      noticeBatchId,
     }));
 
     const chunk = 500;
@@ -881,9 +900,10 @@ router.post(
     }
 
     return res.status(201).json({
-      sentCount: recipientIds.length,
+      sentCount: recipientSet.size,
       scope,
       title,
+      noticeBatchId: noticeBatchId.toString(),
     });
   }
 );

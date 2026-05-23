@@ -15,7 +15,7 @@ export function normalizeCompanyName(name) {
     .toLowerCase();
 }
 
-function companyKeysMatch(a, b) {
+export function companyKeysMatch(a, b) {
   const x = normalizeCompanyName(a);
   const y = normalizeCompanyName(b);
   if (!x || !y) return false;
