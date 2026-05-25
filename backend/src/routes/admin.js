@@ -281,6 +281,59 @@ router.delete(
   }
 );
 
+router.post(
+  '/companies',
+  [
+    body('name').trim().notEmpty().isLength({ max: 120 }),
+    body('email').isEmail().normalizeEmail(),
+    body('phone').trim().matches(/^\d{10}$/).withMessage('Phone must be 10 digits'),
+    body('password').isString().isLength({ min: 6, max: 128 }),
+    body('companyDisplayName').optional().trim().isLength({ max: 200 }),
+    body('headquarters').optional().trim().isLength({ max: 200 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return sendValidationError(res, errors);
+
+    const email = String(req.body.email || '').toLowerCase().trim();
+    const phone = String(req.body.phone || '').trim();
+
+    if (await User.exists({ email })) {
+      return res.status(409).json({ message: 'Email already registered' });
+    }
+    if (await User.exists({ phone })) {
+      return res.status(409).json({ message: 'Phone already registered' });
+    }
+
+    const bdId = await generateUniqueBdId(req.body.name, phone);
+    const companyUser = await User.create({
+      name: String(req.body.name).trim(),
+      email,
+      phone,
+      password: req.body.password,
+      role: 'company',
+      companyStatus: 'approved',
+      accountStatus: 'active',
+      bdId,
+    });
+
+    const displayName = String(req.body.companyDisplayName || '').trim();
+    const hq = String(req.body.headquarters || '').trim();
+    let profile = null;
+    if (displayName || hq) {
+      profile = await CompanyProfile.create({
+        userId: companyUser._id,
+        companyDisplayName: displayName || companyUser.name,
+        headquarters: hq,
+        companyEmailContact: email,
+        companyPhone: phone,
+      });
+    }
+
+    return res.status(201).json({ company: mapCompanyRow(companyUser, profile) });
+  }
+);
+
 router.get('/companies/approved', async (_req, res) => {
   const companies = await User.find({ role: 'company', companyStatus: 'approved' }).sort({ createdAt: -1 }).limit(500);
   const ids = companies.map((c) => c._id);
