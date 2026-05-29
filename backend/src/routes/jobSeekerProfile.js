@@ -31,6 +31,25 @@ const router = Router();
 const profileUploadDir = path.join(process.cwd(), 'uploads', 'profiles');
 fs.mkdirSync(profileUploadDir, { recursive: true });
 
+function isAllowedProfileImage(file) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  const name = String(file.originalname || '').toLowerCase();
+  if (
+    /^image\/(jpeg|jpg|pjpeg|png|x-png|webp|gif|bmp|x-ms-bmp|heic|heif|x-heic|x-heif|avif|tiff|x-tiff)$/i.test(
+      mime
+    )
+  ) {
+    return true;
+  }
+  if (
+    mime === 'application/octet-stream' &&
+    /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif|tif|tiff)$/i.test(name)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 const profileUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, profileUploadDir),
@@ -39,10 +58,16 @@ const profileUpload = multer({
       cb(null, `${Date.now()}-${Math.round(Math.random() * 1e9)}-${safe}`);
     },
   }),
-  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 8 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
-    const ok = /^image\/(jpeg|png|webp)$/i.test(file.mimetype || '');
-    cb(ok ? null : new Error('Only JPEG, PNG, or WebP images are allowed'), ok);
+    cb(
+      isAllowedProfileImage(file)
+        ? null
+        : new Error(
+            'Only image files are allowed (JPEG, PNG, WebP, GIF, HEIC, BMP, AVIF, TIFF)'
+          ),
+      isAllowedProfileImage(file)
+    );
   },
 });
 

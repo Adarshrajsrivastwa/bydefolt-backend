@@ -46,6 +46,70 @@ function sendValidationError(res, errors) {
 
 
 
+function parseOptionalInt(v) {
+
+  if (v === null || v === undefined || v === '') return null;
+
+  const n = Number.parseInt(String(v), 10);
+
+  return Number.isFinite(n) ? n : null;
+
+}
+
+
+
+function parseOptionalFloat(v) {
+
+  if (v === null || v === undefined || v === '') return null;
+
+  const n = Number.parseFloat(String(v));
+
+  return Number.isFinite(n) ? n : null;
+
+}
+
+
+
+function normalizeExperienceRange(min, max) {
+
+  const a = parseOptionalInt(min);
+
+  const b = parseOptionalInt(max);
+
+  if (a == null && b == null) return { experienceMin: null, experienceMax: null };
+
+  let lo = a ?? 0;
+
+  let hi = b ?? a ?? 0;
+
+  if (lo > hi) [lo, hi] = [hi, lo];
+
+  return { experienceMin: lo, experienceMax: hi };
+
+}
+
+
+
+function normalizeSalaryRange(min, max) {
+
+  const a = parseOptionalFloat(min);
+
+  const b = parseOptionalFloat(max);
+
+  if (a == null && b == null) return { salaryMinLpa: null, salaryMaxLpa: null };
+
+  let lo = a ?? 0;
+
+  let hi = b ?? a ?? 0;
+
+  if (lo > hi) [lo, hi] = [hi, lo];
+
+  return { salaryMinLpa: lo, salaryMaxLpa: hi };
+
+}
+
+
+
 function canManageJobs(role) {
 
   return role === 'recruiter' || role === 'company' || role === 'owner';
@@ -109,6 +173,14 @@ function mapJob(job, extras = {}) {
     workplace: j.workplace,
 
     employmentType: j.employmentType,
+
+    experienceMin: j.experienceMin ?? null,
+
+    experienceMax: j.experienceMax ?? null,
+
+    salaryMinLpa: j.salaryMinLpa ?? null,
+
+    salaryMaxLpa: j.salaryMaxLpa ?? null,
 
     status: j.status,
 
@@ -726,6 +798,14 @@ router.post(
 
     body('employmentType').optional().trim().isLength({ max: 80 }),
 
+    body('experienceMin').optional().isInt({ min: 0, max: 40 }),
+
+    body('experienceMax').optional().isInt({ min: 0, max: 40 }),
+
+    body('salaryMinLpa').optional().isFloat({ min: 0, max: 200 }),
+
+    body('salaryMaxLpa').optional().isFloat({ min: 0, max: 200 }),
+
   ],
 
   async (req, res) => {
@@ -770,6 +850,12 @@ router.post(
 
 
 
+    const exp = normalizeExperienceRange(req.body.experienceMin, req.body.experienceMax);
+
+    const sal = normalizeSalaryRange(req.body.salaryMinLpa, req.body.salaryMaxLpa);
+
+
+
     const job = await JobPost.create({
 
       title: req.body.title,
@@ -783,6 +869,10 @@ router.post(
       workplace: req.body.workplace || 'Hybrid',
 
       employmentType: req.body.employmentType || 'Full-time',
+
+      ...exp,
+
+      ...sal,
 
       createdBy: req.user.id,
 
@@ -950,6 +1040,14 @@ router.patch(
 
     body('employmentType').optional().trim().isLength({ max: 80 }),
 
+    body('experienceMin').optional().isInt({ min: 0, max: 40 }),
+
+    body('experienceMax').optional().isInt({ min: 0, max: 40 }),
+
+    body('salaryMinLpa').optional().isFloat({ min: 0, max: 200 }),
+
+    body('salaryMaxLpa').optional().isFloat({ min: 0, max: 200 }),
+
     body('status').optional().isIn(['published', 'closed']),
 
   ],
@@ -1003,6 +1101,38 @@ router.patch(
         job[f] = req.body[f];
 
       }
+
+    }
+
+    if (Object.hasOwn(req.body, 'experienceMin') || Object.hasOwn(req.body, 'experienceMax')) {
+
+      const exp = normalizeExperienceRange(
+
+        Object.hasOwn(req.body, 'experienceMin') ? req.body.experienceMin : job.experienceMin,
+
+        Object.hasOwn(req.body, 'experienceMax') ? req.body.experienceMax : job.experienceMax,
+
+      );
+
+      job.experienceMin = exp.experienceMin;
+
+      job.experienceMax = exp.experienceMax;
+
+    }
+
+    if (Object.hasOwn(req.body, 'salaryMinLpa') || Object.hasOwn(req.body, 'salaryMaxLpa')) {
+
+      const sal = normalizeSalaryRange(
+
+        Object.hasOwn(req.body, 'salaryMinLpa') ? req.body.salaryMinLpa : job.salaryMinLpa,
+
+        Object.hasOwn(req.body, 'salaryMaxLpa') ? req.body.salaryMaxLpa : job.salaryMaxLpa,
+
+      );
+
+      job.salaryMinLpa = sal.salaryMinLpa;
+
+      job.salaryMaxLpa = sal.salaryMaxLpa;
 
     }
 
