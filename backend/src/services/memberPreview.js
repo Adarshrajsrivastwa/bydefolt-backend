@@ -61,6 +61,26 @@ export async function partnerPhotoMap(partnerRows) {
   return new Map(profiles.map((p) => [String(p.userId), p.profilePhotoUrl || '']));
 }
 
+/** userId → profilePhotoUrl for feed/comments (any role with a JobSeekerProfile row). */
+export async function profilePhotoMapForUsers(users) {
+  const ids = [];
+  for (const u of users) {
+    if (!u) continue;
+    const o = typeof u.toObject === 'function' ? u.toObject() : u;
+    if (o._id) ids.push(o._id);
+  }
+  if (ids.length === 0) return new Map();
+  const profiles = await JobSeekerProfile.find({ userId: { $in: ids } })
+    .select('userId profilePhotoUrl')
+    .lean();
+  return new Map(
+    profiles.map((p) => [
+      String(p.userId),
+      String(p.profilePhotoUrl ?? '').trim(),
+    ])
+  );
+}
+
 export async function memberPreviewForUser(u, photoMap) {
   const card = userCard(u);
   if (!card || !u) return null;

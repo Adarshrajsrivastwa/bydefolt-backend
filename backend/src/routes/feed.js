@@ -24,6 +24,7 @@ import {
 } from '../services/feedEngagement.js';
 
 import { effectiveConnectionField } from '../util/connectionField.js';
+import { profilePhotoMapForUsers } from '../services/memberPreview.js';
 import {
   isConnectionTargetRole,
   isFollowTargetRole,
@@ -205,7 +206,12 @@ async function buildAuthorRelationMap(meId, authorIds) {
   return map;
 }
 
-function serializePost(doc, relationMeta = { relation: 'none' }, engagement = null) {
+function serializePost(
+  doc,
+  relationMeta = { relation: 'none' },
+  engagement = null,
+  profilePhotoUrl = ''
+) {
   const a = doc.author;
 
   if (!a || !a._id) return null;
@@ -235,6 +241,7 @@ function serializePost(doc, relationMeta = { relation: 'none' }, engagement = nu
       headline: a.headline || '',
       bdId: a.bdId || '',
       role,
+      profilePhotoUrl: profilePhotoUrl || '',
     },
   };
 }
@@ -341,6 +348,8 @@ router.get('/', async (req, res) => {
     me._id
   );
 
+  const photoMap = await profilePhotoMapForUsers(ordered.map((d) => d.author));
+
   const posts = ordered
     .map((d) => {
       const aid = String(d.author._id);
@@ -349,7 +358,8 @@ router.get('/', async (req, res) => {
           ? { relation: 'self' }
           : relMap.get(aid) ?? { relation: 'none' };
       const eng = engagementMap.get(String(d._id));
-      return serializePost(d, meta, eng);
+      const photo = photoMap.get(aid) || '';
+      return serializePost(d, meta, eng, photo);
     })
     .filter(Boolean);
 
@@ -418,7 +428,9 @@ router.post('/', feedUploadMiddleware, async (req, res) => {
 
 
     const eng = await engagementForPost(post._id, me._id);
-    const out = serializePost(populated, { relation: 'self' }, eng);
+    const photoMap = await profilePhotoMapForUsers([populated.author]);
+    const photo = photoMap.get(String(populated.author._id)) || '';
+    const out = serializePost(populated, { relation: 'self' }, eng, photo);
 
     if (!out) return res.status(500).json({ message: 'Could not load new post' });
 
@@ -536,22 +548,28 @@ router.get('/:postId/comments', async (req, res) => {
   if (limit > 80) limit = 80;
 
   const rows = await FeedPostComment.find({ post: new mongoose.Types.ObjectId(postId) })
-    .populate('user', 'name bdId headline')
+    .populate('user', 'name bdId headline role')
     .sort({ createdAt: 1 })
     .limit(limit)
     .lean();
 
+  const commentPhotoMap = await profilePhotoMapForUsers(
+    rows.map((c) => c.user).filter(Boolean)
+  );
+
   const comments = rows.map((c) => {
     const u = c.user;
+    const uid = u?._id?.toString() ?? '';
     return {
       id: c._id.toString(),
       body: c.body ?? '',
       createdAt: c.createdAt,
       author: {
-        id: u?._id?.toString() ?? '',
+        id: uid,
         name: u?.name ?? 'Member',
         bdId: u?.bdId ?? '',
         headline: u?.headline ?? '',
+        profilePhotoUrl: uid ? commentPhotoMap.get(uid) || '' : '',
       },
     };
   });
@@ -587,6 +605,9 @@ router.post('/:postId/comments', async (req, res) => {
     await engagementForPost(postId, me._id)
   );
 
+  const mePhotoMap = await profilePhotoMapForUsers([me]);
+  const mePhoto = mePhotoMap.get(String(me._id)) || '';
+
   return res.status(201).json({
     comment: {
       id: created._id.toString(),
@@ -597,6 +618,7 @@ router.post('/:postId/comments', async (req, res) => {
         name: me.name,
         bdId: me.bdId ?? '',
         headline: me.headline ?? '',
+        profilePhotoUrl: mePhoto,
       },
     },
     engagement,
@@ -728,7 +750,9 @@ router.patch('/:postId', (req, res, next) => {
 
 
     const eng = await engagementForPost(post._id, me._id);
-    const out = serializePost(populated, { relation: 'self' }, eng);
+    const photoMap = await profilePhotoMapForUsers([populated.author]);
+    const photo = photoMap.get(String(populated.author._id)) || '';
+    const out = serializePost(populated, { relation: 'self' }, eng, photo);
 
     if (!out) return res.status(500).json({ message: 'Could not load post' });
 

@@ -798,13 +798,37 @@ router.post(
 
     body('employmentType').optional().trim().isLength({ max: 80 }),
 
-    body('experienceMin').optional().isInt({ min: 0, max: 40 }),
+    body('experienceMin')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalInt(v);
+        return n !== null && n >= 0 && n <= 40;
+      }),
 
-    body('experienceMax').optional().isInt({ min: 0, max: 40 }),
+    body('experienceMax')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalInt(v);
+        return n !== null && n >= 0 && n <= 40;
+      }),
 
-    body('salaryMinLpa').optional().isFloat({ min: 0, max: 200 }),
+    body('salaryMinLpa')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalFloat(v);
+        return n !== null && n >= 0 && n <= 200;
+      }),
 
-    body('salaryMaxLpa').optional().isFloat({ min: 0, max: 200 }),
+    body('salaryMaxLpa')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalFloat(v);
+        return n !== null && n >= 0 && n <= 200;
+      }),
 
   ],
 
@@ -1040,13 +1064,37 @@ router.patch(
 
     body('employmentType').optional().trim().isLength({ max: 80 }),
 
-    body('experienceMin').optional().isInt({ min: 0, max: 40 }),
+    body('experienceMin')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalInt(v);
+        return n !== null && n >= 0 && n <= 40;
+      }),
 
-    body('experienceMax').optional().isInt({ min: 0, max: 40 }),
+    body('experienceMax')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalInt(v);
+        return n !== null && n >= 0 && n <= 40;
+      }),
 
-    body('salaryMinLpa').optional().isFloat({ min: 0, max: 200 }),
+    body('salaryMinLpa')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalFloat(v);
+        return n !== null && n >= 0 && n <= 200;
+      }),
 
-    body('salaryMaxLpa').optional().isFloat({ min: 0, max: 200 }),
+    body('salaryMaxLpa')
+      .optional({ values: 'null' })
+      .custom((v) => {
+        if (v === null || v === undefined || v === '') return true;
+        const n = parseOptionalFloat(v);
+        return n !== null && n >= 0 && n <= 200;
+      }),
 
     body('status').optional().isIn(['published', 'closed']),
 
@@ -1108,9 +1156,9 @@ router.patch(
 
       const exp = normalizeExperienceRange(
 
-        Object.hasOwn(req.body, 'experienceMin') ? req.body.experienceMin : job.experienceMin,
+        Object.hasOwn(req.body, 'experienceMin') ? parseOptionalInt(req.body.experienceMin) : job.experienceMin,
 
-        Object.hasOwn(req.body, 'experienceMax') ? req.body.experienceMax : job.experienceMax,
+        Object.hasOwn(req.body, 'experienceMax') ? parseOptionalInt(req.body.experienceMax) : job.experienceMax,
 
       );
 
@@ -1124,9 +1172,9 @@ router.patch(
 
       const sal = normalizeSalaryRange(
 
-        Object.hasOwn(req.body, 'salaryMinLpa') ? req.body.salaryMinLpa : job.salaryMinLpa,
+        Object.hasOwn(req.body, 'salaryMinLpa') ? parseOptionalFloat(req.body.salaryMinLpa) : job.salaryMinLpa,
 
-        Object.hasOwn(req.body, 'salaryMaxLpa') ? req.body.salaryMaxLpa : job.salaryMaxLpa,
+        Object.hasOwn(req.body, 'salaryMaxLpa') ? parseOptionalFloat(req.body.salaryMaxLpa) : job.salaryMaxLpa,
 
       );
 
