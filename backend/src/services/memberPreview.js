@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { CompanyProfile } from '../models/CompanyProfile.js';
 import { JobSeekerProfile } from '../models/JobSeekerProfile.js';
 import { User } from '../models/User.js';
 import { effectiveConnectionField } from '../util/connectionField.js';
@@ -59,6 +60,27 @@ export async function partnerPhotoMap(partnerRows) {
     .select('userId profilePhotoUrl')
     .lean();
   return new Map(profiles.map((p) => [String(p.userId), p.profilePhotoUrl || '']));
+}
+
+/** userId → { logoUrl, displayName, industry } for company authors on the feed. */
+export async function companyAuthorMetaMap(users) {
+  const companyIds = users
+    .filter((u) => u && u._id && u.role === 'company')
+    .map((u) => u._id);
+  if (companyIds.length === 0) return new Map();
+  const profiles = await CompanyProfile.find({ userId: { $in: companyIds } })
+    .select('userId logoUrl companyDisplayName industry')
+    .lean();
+  return new Map(
+    profiles.map((p) => [
+      String(p.userId),
+      {
+        logoUrl: String(p.logoUrl ?? '').trim(),
+        displayName: String(p.companyDisplayName ?? '').trim(),
+        industry: String(p.industry ?? '').trim(),
+      },
+    ])
+  );
 }
 
 /** userId → profilePhotoUrl for feed/comments (any role with a JobSeekerProfile row). */

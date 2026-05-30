@@ -24,7 +24,11 @@ import {
 } from '../services/feedEngagement.js';
 
 import { effectiveConnectionField } from '../util/connectionField.js';
-import { profilePhotoMapForUsers } from '../services/memberPreview.js';
+import {
+  companyAuthorMetaMap,
+  displayUserName,
+  profilePhotoMapForUsers,
+} from '../services/memberPreview.js';
 import {
   isConnectionTargetRole,
   isFollowTargetRole,
@@ -210,7 +214,8 @@ function serializePost(
   doc,
   relationMeta = { relation: 'none' },
   engagement = null,
-  profilePhotoUrl = ''
+  profilePhotoUrl = '',
+  authorOverrides = {}
 ) {
   const a = doc.author;
 
@@ -219,6 +224,22 @@ function serializePost(
   const authorId = a._id.toString();
   const role = a.role || '';
   const eng = serializeEngagement(engagement);
+  const isCompany = role === 'company';
+  const name =
+    authorOverrides.name ||
+    (isCompany ? '' : displayUserName(a)) ||
+    a.name ||
+    '';
+  const headline =
+    authorOverrides.headline ||
+    (isCompany && authorOverrides.industry
+      ? authorOverrides.industry
+      : a.headline || '') ||
+    '';
+  const photo =
+    authorOverrides.profilePhotoUrl !== undefined
+      ? authorOverrides.profilePhotoUrl
+      : profilePhotoUrl || '';
 
   return {
     id: doc._id.toString(),
@@ -237,12 +258,31 @@ function serializePost(
     commentCount: eng.commentCount,
     author: {
       id: authorId,
-      name: a.name,
-      headline: a.headline || '',
+      name,
+      headline: headline || (isCompany ? a.bdId || '' : ''),
       bdId: a.bdId || '',
       role,
-      profilePhotoUrl: profilePhotoUrl || '',
+      profilePhotoUrl: photo || '',
     },
+  };
+}
+
+function authorPresentationForFeed(author, seekerPhotoMap, companyMetaMap) {
+  const aid = String(author._id);
+  const role = author.role || '';
+  if (role !== 'company') {
+    return {
+      profilePhotoUrl: seekerPhotoMap.get(aid) || '',
+      name: displayUserName(author) || author.name || '',
+      headline: author.headline || '',
+    };
+  }
+  const meta = companyMetaMap.get(aid);
+  return {
+    profilePhotoUrl: meta?.logoUrl || '',
+    name: meta?.displayName || displayUserName(author) || author.name || '',
+    headline: meta?.industry || author.headline || '',
+    industry: meta?.industry || '',
   };
 }
 
@@ -348,7 +388,9 @@ router.get('/', async (req, res) => {
     me._id
   );
 
-  const photoMap = await profilePhotoMapForUsers(ordered.map((d) => d.author));
+  const authors = ordered.map((d) => d.author);
+  const photoMap = await profilePhotoMapForUsers(authors);
+  const companyMetaMap = await companyAuthorMetaMap(authors);
 
   const posts = ordered
     .map((d) => {
@@ -358,8 +400,16 @@ router.get('/', async (req, res) => {
           ? { relation: 'self' }
           : relMap.get(aid) ?? { relation: 'none' };
       const eng = engagementMap.get(String(d._id));
-      const photo = photoMap.get(aid) || '';
-      return serializePost(d, meta, eng, photo);
+      const presentation = authorPresentationForFeed(
+        d.author,
+        photoMap,
+        companyMetaMap
+      );
+      return serializePost(d, meta, eng, presentation.profilePhotoUrl, {
+        name: presentation.name,
+        headline: presentation.headline,
+        profilePhotoUrl: presentation.profilePhotoUrl,
+      });
     })
     .filter(Boolean);
 
@@ -429,8 +479,23 @@ router.post('/', feedUploadMiddleware, async (req, res) => {
 
     const eng = await engagementForPost(post._id, me._id);
     const photoMap = await profilePhotoMapForUsers([populated.author]);
-    const photo = photoMap.get(String(populated.author._id)) || '';
-    const out = serializePost(populated, { relation: 'self' }, eng, photo);
+    const companyMetaMap = await companyAuthorMetaMap([populated.author]);
+    const presentation = authorPresentationForFeed(
+      populated.author,
+      photoMap,
+      companyMetaMap
+    );
+    const out = serializePost(
+      populated,
+      { relation: 'self' },
+      eng,
+      presentation.profilePhotoUrl,
+      {
+        name: presentation.name,
+        headline: presentation.headline,
+        profilePhotoUrl: presentation.profilePhotoUrl,
+      }
+    );
 
     if (!out) return res.status(500).json({ message: 'Could not load new post' });
 
@@ -751,8 +816,23 @@ router.patch('/:postId', (req, res, next) => {
 
     const eng = await engagementForPost(post._id, me._id);
     const photoMap = await profilePhotoMapForUsers([populated.author]);
-    const photo = photoMap.get(String(populated.author._id)) || '';
-    const out = serializePost(populated, { relation: 'self' }, eng, photo);
+    const companyMetaMap = await companyAuthorMetaMap([populated.author]);
+    const presentation = authorPresentationForFeed(
+      populated.author,
+      photoMap,
+      companyMetaMap
+    );
+    const out = serializePost(
+      populated,
+      { relation: 'self' },
+      eng,
+      presentation.profilePhotoUrl,
+      {
+        name: presentation.name,
+        headline: presentation.headline,
+        profilePhotoUrl: presentation.profilePhotoUrl,
+      }
+    );
 
     if (!out) return res.status(500).json({ message: 'Could not load post' });
 

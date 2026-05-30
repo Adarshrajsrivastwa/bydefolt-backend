@@ -39,9 +39,11 @@ const router = Router();
 
 
 function sendValidationError(res, errors) {
-
-  return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
-
+  const arr = errors.array();
+  const first = arr[0];
+  const hint = (first?.msg || first?.message || '').trim();
+  const message = hint || 'Validation failed';
+  return res.status(400).json({ message, errors: arr });
 }
 
 

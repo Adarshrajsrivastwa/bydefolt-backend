@@ -220,36 +220,21 @@ router.get('/view/:bdId', async (req, res) => {
   );
   if (!target) return res.status(404).json({ message: 'Member not found' });
 
-  let profilePhotoUrl = '';
-  let profile = await mapProfileForSeeker(
-    {
-      about: '',
-      profilePhotoUrl: '',
-      workExperiences: [],
-      education: [],
-      skills: [],
-      languages: [],
-      appreciations: [],
-    },
+  const emptyProfile = {
+    about: '',
+    profilePhotoUrl: '',
+    workExperiences: [],
+    education: [],
+    skills: [],
+    languages: [],
+    appreciations: [],
+  };
+  const doc = await JobSeekerProfile.findOne({ userId: target._id });
+  const profile = await mapProfileForSeeker(
+    doc || emptyProfile,
     target._id.toString()
   );
-
-  if (target.role === 'jobSeeker') {
-    const doc = await JobSeekerProfile.findOne({ userId: target._id });
-    profile = await mapProfileForSeeker(
-      doc || {
-        about: '',
-        profilePhotoUrl: '',
-        workExperiences: [],
-        education: [],
-        skills: [],
-        languages: [],
-        appreciations: [],
-      },
-      target._id.toString()
-    );
-    profilePhotoUrl = profile.profilePhotoUrl || '';
-  }
+  const profilePhotoUrl = profile.profilePhotoUrl || '';
 
   const relationship = await relationshipForViewer(viewer._id, target._id);
   const { connectedCount, followingCount } = await connectionStatsForUser(target._id);
